@@ -1,0 +1,6 @@
+bin/
+obj/
+*.m3u
+*.m3u8
+*.xml.gz
+*.user
