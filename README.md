@@ -1,4 +1,4 @@
-# Windows IPTV Player
+# CatLu IPTV
 
 Плеер для Windows x64: C# / .NET 8, WPF, LibVLCSharp.
 
@@ -26,7 +26,7 @@ dotnet run --project .\IptvPlayer\IptvPlayer.csproj
 dotnet publish .\IptvPlayer\IptvPlayer.csproj -c Release -o .\IPTV
 ```
 
-Запуск сборки: `IPTV\IptvPlayer.exe`. Сохраняйте вместе всю папку `IPTV`, включая библиотеки.
+Запуск сборки: `IPTV\CatLu IPTV.exe`. Сохраняйте вместе всю папку `IPTV`, включая библиотеки.
 
 ## Проверки
 

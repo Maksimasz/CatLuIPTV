@@ -2,7 +2,7 @@
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
- Title="IPTV" Width="1280" Height="800" MinWidth="960" MinHeight="620"
+ Title="CatLu IPTV" Icon="Assets/catlu.ico" Width="1280" Height="800" MinWidth="960" MinHeight="620"
  Background="#111418" Foreground="#ECEEF2" FontFamily="Segoe UI" FontSize="14" PreviewKeyDown="Window_KeyDown">
  <Window.Resources>
   <SolidColorBrush x:Key="Accent" Color="#D9D755"/>
@@ -75,8 +75,8 @@
   <Grid DockPanel.Dock="Top" Margin="0,0,0,16">
    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-    <TextBlock Text="IPTV" FontSize="23" FontWeight="Bold" VerticalAlignment="Center"/>
-    <TextBlock Text="●" Foreground="{StaticResource Accent}" Margin="9,0,22,0" VerticalAlignment="Center"/>
+    <Image Source="Assets/catlu.png" Width="32" Height="32" Margin="0,0,10,0" AutomationProperties.Name="Кот CatLu"/>
+    <TextBlock Text="CatLu IPTV" FontSize="23" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,22,0"/>
     <Button Content="☰  Каналы" Click="ToggleChannels_Click"/>
    </StackPanel>
    <StackPanel Grid.Column="1" Orientation="Horizontal">

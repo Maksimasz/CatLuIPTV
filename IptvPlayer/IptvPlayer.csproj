@@ -6,8 +6,14 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>CatLu IPTV</AssemblyName>
+    <Title>CatLu IPTV</Title>
+    <Product>CatLu IPTV</Product>
+    <ApplicationIcon>Assets/catlu.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <Resource Include="Assets/catlu.ico"/>
+    <Resource Include="Assets/catlu.png"/>
     <PackageReference Include="LibVLCSharp.WPF" Version="3.10.1" />
     <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" />
   </ItemGroup>
