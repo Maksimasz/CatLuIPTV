@@ -12,7 +12,7 @@ namespace IptvPlayer;
 
 public partial class MainWindow : Window
 {
-    private const string SettingsPath = @"D:\web\epg\player-settings.json";
+    private static readonly string SettingsPath = AppPaths.SettingsPath;
     private PlayerSettings settings = new();
     private bool restoring;
     private bool closed;
@@ -68,13 +68,13 @@ public partial class MainWindow : Window
         var errors = new List<string>();
         try
         {
-            try { settings = PlayerSettings.Read(SettingsPath); }
+            try { Directory.CreateDirectory(AppPaths.ResourcesDirectory); settings = PlayerSettings.Read(SettingsPath); }
             catch { errors.Add("Настройки повреждены или недоступны; используются стандартные пути."); }
             Status.Text = "Загрузка сохранённых файлов…";
             if (!string.IsNullOrEmpty(settings.PlaylistPath) && !await LoadPlaylist(settings.PlaylistPath))
                 errors.Add("Плейлист недоступен или пуст. Выберите его через «Открыть M3U…».");
             if (!closed && !string.IsNullOrEmpty(settings.EpgPath) && !await LoadEpg(settings.EpgPath))
-                errors.Add("EPG недоступен или повреждён. Выберите его через «Открыть EPG…».");
+                errors.Add("EPG недоступен. Нажмите «Обновить EPG» или выберите файл через «Открыть EPG…».");
         }
         finally
         {
@@ -146,7 +146,7 @@ public partial class MainWindow : Window
 
     private async void OpenPlaylist_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Filter = "Плейлисты|*.m3u;*.m3u8", InitialDirectory = @"D:\web\epg\resurses" };
+        var dialog = new OpenFileDialog { Filter = "Плейлисты|*.m3u;*.m3u8", InitialDirectory = AppPaths.ResourcesDirectory };
         if (dialog.ShowDialog(this) != true) return;
         OpenPlaylist.IsEnabled = RefreshEpg.IsEnabled = false;
         try
@@ -161,7 +161,7 @@ public partial class MainWindow : Window
 
     private async void OpenEpg_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Filter = "XMLTV|*.xml;*.gz", InitialDirectory = @"D:\web\epg\resurses" };
+        var dialog = new OpenFileDialog { Filter = "XMLTV|*.xml;*.gz", InitialDirectory = AppPaths.ResourcesDirectory };
         if (dialog.ShowDialog(this) != true) return;
         OpenEpg.IsEnabled = RefreshEpg.IsEnabled = false;
         Status.Text = "Чтение программы передач…";

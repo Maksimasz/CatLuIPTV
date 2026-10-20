@@ -11,3 +11,5 @@ obj/
 *.previous.gz
 *.tmp
 *.user
+
+/release/

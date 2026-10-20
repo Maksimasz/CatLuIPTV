@@ -8,8 +8,8 @@ public sealed record FavoriteChannel(string Name, string Group);
 
 public sealed class PlayerSettings
 {
-    public string? PlaylistPath { get; set; } = @"D:\web\epg\resurses\playlist.m3u8";
-    public string? EpgPath { get; set; } = @"D:\web\epg\resurses\epg_small.xml.gz";
+    public string? PlaylistPath { get; set; } = AppPaths.PlaylistPath;
+    public string? EpgPath { get; set; } = AppPaths.EpgPath;
     public string? ChannelName { get; set; }
     public string? ChannelGroup { get; set; }
     public HashSet<FavoriteChannel> Favorites { get; set; } = [];
@@ -28,6 +28,7 @@ public sealed class PlayerSettings
     public void Save(string path)
     {
         // Сначала записываем целый файл, чтобы сбой записи не испортил предыдущие настройки.
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var temporary = path + ".tmp";
         try
         {

@@ -10,7 +10,7 @@ namespace IptvPlayer;
 public static class EpgUpdater
 {
     private static readonly HttpClient client = new();
-    public const string TargetPath = @"D:\web\epg\resurses\epg_small.xml.gz";
+    public static readonly string TargetPath = AppPaths.EpgPath;
 
     public static async Task<(Epg Guide, int Count)> UpdateAsync(string targetPath,
         IProgress<string>? progress = null, CancellationToken cancellation = default)

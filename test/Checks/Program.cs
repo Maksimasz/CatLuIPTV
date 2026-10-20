@@ -100,3 +100,20 @@ try
 }
 finally { File.Delete(favoritePath); }
 Console.WriteLine("Проверки групп, избранного и совместимости настроек: OK");
+
+var pathsTest = Path.Combine(Path.GetTempPath(), "iptv-paths-" + Guid.NewGuid());
+try
+{
+    Directory.CreateDirectory(Path.Combine(pathsTest, "project", "IptvPlayer"));
+    File.WriteAllText(Path.Combine(pathsTest, "project", "IptvPlayer", "IptvPlayer.csproj"), "<Project/>");
+    var developmentRoot = Path.Combine(pathsTest, "project");
+    Check(AppPaths.ResolveDataDirectory(Path.Combine(developmentRoot, "IPTV"), pathsTest) == developmentRoot, "Existing development profile preserved");
+    Check(AppPaths.ResolveDataDirectory(Path.Combine(developmentRoot, "IptvPlayer", "bin", "Debug"), pathsTest) == developmentRoot, "Dotnet run uses project profile");
+    var installedRoot = Path.Combine(pathsTest, "installed");
+    Check(AppPaths.ResolveDataDirectory(installedRoot, Path.Combine(pathsTest, "user")) == Path.Combine(pathsTest, "user", "CatLu IPTV"), "Installed app uses user profile without fixed drive");
+    var nestedSettings = Path.Combine(pathsTest, "new-profile", "settings.json");
+    new PlayerSettings().Save(nestedSettings);
+    Check(File.Exists(nestedSettings), "First run creates writable settings directory");
+    Console.WriteLine("Проверки путей установленного плеера и совместимости рабочей копии: OK");
+}
+finally { Directory.Delete(pathsTest, recursive: true); }
