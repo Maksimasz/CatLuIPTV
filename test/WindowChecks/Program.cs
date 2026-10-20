@@ -1,0 +1,71 @@
+using System.Reflection;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using IptvPlayer;
+
+internal static class Program
+{
+    [STAThread]
+    private static void Main()
+    {
+        var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        var window = new MainWindow();
+        object Named(string name) => window.FindName(name) ?? throw new Exception("Missing control: " + name);
+        T Field<T>(string name) => (T)(typeof(MainWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!);
+        void Call(string name, params object?[] args) => typeof(MainWindow).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, args);
+        void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
+        var channels = (ColumnDefinition)Named("ChannelsColumn");
+        var guide = (ColumnDefinition)Named("GuideColumn");
+        var gap = (ColumnDefinition)Named("GuideGapColumn");
+        var controls = (Border)Named("ControlsPanel");
+        var normalHost = (ContentControl)Named("WindowControlsHost");
+        var fullscreenHost = (ContentControl)Named("FullscreenControlsHost");
+        var root = (DockPanel)Named("RootDock");
+        try
+        {
+            Check(guide.Width.Value == 350, "Guide starts open");
+            Call("ToggleGuide_Click", null, new RoutedEventArgs());
+            Check(guide.Width.Value == 0 && gap.Width.Value == 0, "Guide collapses including gap");
+            Call("ToggleGuide_Click", null, new RoutedEventArgs());
+            Check(guide.Width.Value == 350 && gap.Width.Value == 12, "Guide reopens");
+            Call("ToggleChannels_Click", null, new RoutedEventArgs());
+            var mediaPlayer = Field<object?>("player");
+            Check(mediaPlayer is not null, "Native media player initialized");
+
+            foreach (var guideInitiallyOpen in new[] { true, false })
+            {
+                if (!guideInitiallyOpen) Call("ToggleGuide_Click", null, new RoutedEventArgs());
+                if (!guideInitiallyOpen) window.WindowState = WindowState.Maximized;
+                var stateBefore = window.WindowState;
+                var channelsBefore = channels.Width;
+                var guideBefore = guide.Width;
+                Call("ToggleFullscreen");
+                Check(Field<bool>("fullscreen") && window.WindowStyle == WindowStyle.None, "Borderless fullscreen");
+                Check(root.Margin == new Thickness(0) && ((Grid)Named("TopBar")).Visibility == Visibility.Collapsed && ((TextBlock)Named("Status")).Visibility == Visibility.Collapsed, "No window chrome in fullscreen");
+                Check(channels.Width.Value == 0 && guide.Width.Value == 0 && gap.Width.Value == 0, "Sidebars do not reserve video space");
+                root.Measure(new Size(1280, 720));
+                root.Arrange(new Rect(0, 0, 1280, 720));
+                root.UpdateLayout();
+                var video = (FrameworkElement)Named("Video");
+                var origin = video.TranslatePoint(new Point(0, 0), root);
+                Check(Math.Abs(video.ActualWidth - 1280) < 1 && Math.Abs(video.ActualHeight - 720) < 1 && origin.X == 0 && origin.Y == 0, "Video fills the entire fullscreen viewport");
+                Check(normalHost.Content is null && ReferenceEquals(fullscreenHost.Content, controls), "Same playback controls move over video");
+                Check(ReferenceEquals(mediaPlayer, Field<object?>("player")), "Fullscreen keeps same media player");
+
+                Call("ControlsIdle_Tick", null, EventArgs.Empty);
+                Check(fullscreenHost.Visibility == Visibility.Collapsed && ((Grid)Named("VideoOverlay")).Cursor == Cursors.None, "Idle hides controls and cursor");
+                Call("ShowFullscreenControls");
+                Check(fullscreenHost.Visibility == Visibility.Visible, "Controls can reappear after hiding");
+                Call("ToggleFullscreen");
+                Check(!Field<bool>("fullscreen") && root.Margin == new Thickness(18) && window.WindowState == stateBefore, "Exit restores previous window state");
+                Check(channels.Width == channelsBefore && guide.Width == guideBefore, "Exit restores panel visibility");
+                Check(ReferenceEquals(normalHost.Content, controls) && fullscreenHost.Content is null, "Controls restored without duplication");
+                Check(!Field<System.Windows.Threading.DispatcherTimer>("controlsIdle").IsEnabled, "Exit stops idle timer");
+            }
+            Console.WriteLine("Проверки сворачивания EPG, полного экрана, скрытия и восстановления панели: OK");
+        }
+        finally { window.Close(); application.Shutdown(); }
+    }
+}

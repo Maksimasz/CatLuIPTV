@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using MediaPlayer = LibVLCSharp.Shared.MediaPlayer;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using LibVLCSharp.Shared;
 using Microsoft.Win32;
 
@@ -25,16 +26,23 @@ public partial class MainWindow : Window
     private Channel? playingChannel;
     private bool fullscreen;
     private WindowState previousWindowState;
+    private GridLength previousChannelsWidth;
+    private GridLength previousGuideWidth;
+    private Point lastVideoPointer;
+    private readonly System.Windows.Threading.DispatcherTimer controlsIdle = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly System.Windows.Threading.DispatcherTimer timer = new() { Interval = TimeSpan.FromMinutes(1) };
 
     public MainWindow()
     {
         InitializeComponent();
+        // VideoView рисует содержимое поверх видео в отдельном окне; передаём ему стили.
+        VideoOverlay.Resources.MergedDictionaries.Add(Resources);
+        controlsIdle.Tick += ControlsIdle_Tick;
         try
         {
             Core.Initialize();
             vlc = new LibVLC("--quiet", "--no-video-title-show");
-            player = new MediaPlayer(vlc) { Volume = 70 };
+            player = new MediaPlayer(vlc) { Volume = 70, EnableMouseInput = false, EnableKeyInput = false };
             Video.MediaPlayer = player;
             player.Playing += (_, _) => SetPlaybackState("В эфире");
             player.Paused += (_, _) => SetPlaybackState("Пауза");
@@ -291,35 +299,108 @@ public partial class MainWindow : Window
         ChannelsColumn.Width = new GridLength(ChannelsColumn.Width.Value == 0 ? 250 : 0);
         if (ChannelsColumn.Width.Value > 0) Search.Focus();
     }
+    private void ToggleGuide_Click(object sender, RoutedEventArgs e)
+    {
+        GuideColumn.Width = new GridLength(GuideColumn.Width.Value == 0 ? 350 : 0);
+        GuideGapColumn.Width = new GridLength(GuideColumn.Width.Value == 0 ? 0 : 12);
+    }
     private void Fullscreen_Click(object sender, RoutedEventArgs e) => ToggleFullscreen();
     private void ToggleFullscreen()
     {
         if (!fullscreen)
         {
             previousWindowState = WindowState;
+            previousChannelsWidth = ChannelsColumn.Width;
+            previousGuideWidth = GuideColumn.Width;
+            fullscreen = true;
+            RootDock.Margin = new Thickness(0);
+            TopBar.Visibility = Status.Visibility = Visibility.Collapsed;
+            ChannelsColumn.Width = GuideColumn.Width = GuideGapColumn.Width = new GridLength(0);
+            PlayerBorder.CornerRadius = new CornerRadius(0);
+            WindowControlsHost.Content = null;
+            FullscreenControlsHost.Content = ControlsPanel;
+            FullscreenButton.Content = "⤡  Выйти";
+            FullscreenButton.ToolTip = "Выйти из полного экрана (Esc)";
+            System.Windows.Automation.AutomationProperties.SetName(FullscreenButton, "Выйти из полного экрана");
             WindowState = WindowState.Normal;
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.NoResize;
             WindowState = WindowState.Maximized;
+            VideoOverlay.Focus();
+            lastVideoPointer = Mouse.GetPosition(VideoOverlay);
+            ShowFullscreenControls();
         }
         else
         {
+            fullscreen = false;
+            controlsIdle.Stop();
+            FullscreenControlsHost.Content = null;
+            FullscreenControlsHost.Visibility = Visibility.Collapsed;
+            WindowControlsHost.Content = ControlsPanel;
+            VideoOverlay.Cursor = Cursors.Arrow;
+            RootDock.Margin = new Thickness(18);
+            TopBar.Visibility = Status.Visibility = Visibility.Visible;
+            ChannelsColumn.Width = previousChannelsWidth;
+            GuideColumn.Width = previousGuideWidth;
+            GuideGapColumn.Width = new GridLength(previousGuideWidth.Value == 0 ? 0 : 12);
+            PlayerBorder.CornerRadius = new CornerRadius(6);
+            FullscreenButton.Content = "⛶";
+            FullscreenButton.ToolTip = "Полный экран (F11), выход — Esc";
+            System.Windows.Automation.AutomationProperties.SetName(FullscreenButton, "Полный экран");
             WindowState = WindowState.Normal;
             WindowStyle = WindowStyle.SingleBorderWindow;
             ResizeMode = ResizeMode.CanResize;
             WindowState = previousWindowState;
+            Focus();
         }
-        fullscreen = !fullscreen;
+    }
+    private void ShowFullscreenControls()
+    {
+        if (!fullscreen) return;
+        if (FullscreenControlsHost.Visibility != Visibility.Visible)
+        {
+            FullscreenControlsHost.Visibility = Visibility.Visible;
+            ((TranslateTransform)FullscreenControlsHost.RenderTransform).BeginAnimation(TranslateTransform.YProperty,
+                new DoubleAnimation(90, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = new QuadraticEase() });
+        }
+        VideoOverlay.Cursor = Cursors.Arrow;
+        controlsIdle.Stop();
+        controlsIdle.Start();
+    }
+    private void ControlsIdle_Tick(object? sender, EventArgs e)
+    {
+        if (!fullscreen || ControlsPanel.IsMouseOver || ControlsPanel.IsKeyboardFocusWithin || Mouse.Captured is not null) return;
+        controlsIdle.Stop();
+        FullscreenControlsHost.Visibility = Visibility.Collapsed;
+        VideoOverlay.Cursor = Cursors.None;
+    }
+    private void Video_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!fullscreen) return;
+        var position = e.GetPosition(VideoOverlay);
+        if (position == lastVideoPointer) return;
+        lastVideoPointer = position;
+        if (!ControlsPanel.IsMouseOver && ControlsPanel.IsKeyboardFocusWithin) VideoOverlay.Focus();
+        ShowFullscreenControls();
+    }
+    private void Video_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (ControlsPanel.IsMouseOver) return;
+        VideoOverlay.Focus();
+        ShowFullscreenControls();
     }
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
+        if (fullscreen) ShowFullscreenControls();
         if (e.Key == Key.F11 || e.Key == Key.Escape && fullscreen) { ToggleFullscreen(); e.Handled = true; }
         else if (e.Key == Key.Escape) { ChannelsColumn.Width = new GridLength(0); e.Handled = true; }
     }
 
     private void Play_Click(object sender, RoutedEventArgs e)
     {
-        if (Channels.SelectedItem is not Channel channel || player is null || vlc is null) return;
+        var selected = Channels.SelectedItem as Channel;
+        var channel = fullscreen ? playingChannel ?? selected : selected;
+        if (channel is null || player is null || vlc is null) return;
         try
         {
             using var media = new Media(vlc, channel.Stream);
@@ -343,8 +424,10 @@ public partial class MainWindow : Window
         closed = true;
         lifetime.Cancel();
         timer.Stop();
+        controlsIdle.Stop();
         Video.MediaPlayer = null;
         player?.Stop();
+        Video.Dispose();
         player?.Dispose();
         vlc?.Dispose();
         base.OnClosed(e);
