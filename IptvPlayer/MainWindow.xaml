@@ -207,7 +207,13 @@
        <TextBlock Text="♪" Foreground="#ADB4BF" VerticalAlignment="Center" Margin="18,0,8,0" ToolTip="Громкость"/>
        <Slider x:Name="Volume" Width="80" Minimum="0" Maximum="100" Value="70" ValueChanged="Volume_Changed" VerticalAlignment="Center" AutomationProperties.Name="Громкость"/>
        <Button x:Name="FullscreenButton" Content="⛶" Click="Fullscreen_Click" Margin="12,0,0,0" FontSize="19" Padding="10,7" ToolTip="Полный экран (F11), выход — Esc" AutomationProperties.Name="Полный экран"/>
+       <Button x:Name="RecordButton" Content="● Запись" Click="Record_Click" Margin="8,0,0,0" Padding="12,9" ToolTip="Записать текущий эфир в TS"/>
+       <StackPanel x:Name="ArchiveSeekControls" Orientation="Horizontal" Visibility="Collapsed">
+        <Button Content="−30 с" Click="ArchiveBack_Click" Margin="8,0,0,0" Padding="12,9" ToolTip="Назад на 30 секунд" AutomationProperties.Name="Архив: назад на 30 секунд"/>
+        <Button Content="+30 с" Click="ArchiveForward_Click" Margin="8,0,0,0" Padding="12,9" ToolTip="Вперёд на 30 секунд" AutomationProperties.Name="Архив: вперёд на 30 секунд"/>
+       </StackPanel>
       </WrapPanel>
+      <TextBlock x:Name="RecordingInfo" Visibility="Collapsed" Foreground="#EF8585" FontSize="12" Margin="0,8,0,0" TextTrimming="CharacterEllipsis"/>
        </StackPanel>
       </Border>
      </ContentControl>

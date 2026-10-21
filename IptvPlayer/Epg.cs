@@ -8,6 +8,8 @@ namespace IptvPlayer;
 
 public sealed record Programme(DateTimeOffset Start, DateTimeOffset Stop, string Title)
 {
+    public double SeekPosition(double positionSeconds, double deltaSeconds, DateTimeOffset now) =>
+        Math.Clamp(positionSeconds + deltaSeconds, 0, Math.Max(0, ((Stop < now ? Stop : now) - Start).TotalSeconds - 1));
     public bool IsCurrent => Start <= DateTimeOffset.UtcNow && Stop > DateTimeOffset.UtcNow;
     public string TimeRange => $"{Start.ToLocalTime():dd.MM} / {Start.ToLocalTime():HH:mm} — {Stop.ToLocalTime():HH:mm}";
     public string Duration

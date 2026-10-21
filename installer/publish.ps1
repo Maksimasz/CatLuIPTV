@@ -19,11 +19,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'GitHub access failed. Run: gh auth login -h github.com' }
     $remote = git remote get-url origin
     if ($LASTEXITCODE -ne 0 -or $remote -notmatch ('[:/]' + [regex]::Escape($Repository) + '(\.git)?$')) { throw 'Origin does not match release repository' }
-    git add -- IptvPlayer test/WindowChecks README.md installer
+    git add -- .gitignore IptvPlayer test/Checks test/WindowChecks build_epg.py README.md installer
     if ($LASTEXITCODE -ne 0) { throw 'Cannot stage release files' }
     git diff --cached --quiet
     if ($LASTEXITCODE -eq 1) {
-        git commit -m "Release CatLu IPTV $version with named playlists and update checks"
+        git commit -m "Release CatLu IPTV $version with archive playback, seeking and recording"
         if ($LASTEXITCODE -ne 0) { throw 'Commit failed' }
     } elseif ($LASTEXITCODE -ne 0) { throw 'Cannot inspect staged files' }
     $commit = git rev-parse HEAD

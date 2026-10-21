@@ -9,7 +9,7 @@ SOURCE = ROOT / "epg2.xml"
 OUTPUT = ROOT / "epg_small.xml.gz"
 
 today = datetime.now(timezone.utc).date()
-start_date = today - timedelta(days=3)
+start_date = today - timedelta(days=7)
 end_date = today + timedelta(days=3)
 
 print(f"Период: {start_date} — {end_date}")

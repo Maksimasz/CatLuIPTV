@@ -1,6 +1,25 @@
 using System.Text;
 using IptvPlayer;
 
+var archiveNow = DateTimeOffset.Parse("2026-10-21T12:00:00Z");
+var recording = new Programme(archiveNow.AddHours(-2), archiveNow.AddHours(-1), "Replay");
+if (recording.SeekPosition(10, -30, archiveNow) != 0 || recording.SeekPosition(10, 30, archiveNow) != 40 ||
+    recording.SeekPosition(3590, 30, archiveNow) != 3599) throw new Exception("Archive seek boundaries");
+var ongoing = recording with { Stop = archiveNow.AddHours(1) };
+if (ongoing.SeekPosition(7190, 30, archiveNow) != 7199) throw new Exception("Archive seek cannot pass the live edge");
+var archived = Playlist.Parse(new[] { "#EXTM3U", "#EXTINF:-1 tvg-rec=\"3\",Replay", "https://example.invalid/live?token=synthetic&utc=1&lutc=2" }).Single();
+if (archived.ArchiveDays != 3 || !archived.CanReplay(recording, archiveNow)) throw new Exception("Archive metadata");
+var replayQuery = archived.ArchiveStream(recording, archiveNow).Query;
+if (!archived.ArchiveStream(recording with { Start = recording.Start.AddSeconds(30) }, archiveNow).Query.Contains($"utc={recording.Start.AddSeconds(30).ToUnixTimeSeconds()}"))
+    throw new Exception("Archive seek uses shifted provider timestamp");
+if (!replayQuery.Contains("token=synthetic") || !replayQuery.Contains($"utc={recording.Start.ToUnixTimeSeconds()}") || !replayQuery.Contains($"lutc={archiveNow.ToUnixTimeSeconds()}") || replayQuery.Split('&').Length != 3) throw new Exception("Archive URL");
+if (archived.CanReplay(recording with { Start = archiveNow.AddDays(-4) }, archiveNow) || archived.CanReplay(recording with { Start = archiveNow.AddHours(1) }, archiveNow)) throw new Exception("Archive limits");
+using (var archiveXml = new MemoryStream(Encoding.UTF8.GetBytes($"<tv><programme channel='replay' start='{recording.Start:yyyyMMddHHmmss} +0000' stop='{recording.Stop:yyyyMMddHHmmss} +0000'><title>Replay</title></programme></tv>")))
+{
+    var archiveGuide = Epg.Parse(archiveXml);
+    if (archiveGuide.Archive("replay", archived, recording.Start.ToLocalTime().Date, archiveNow).Count() != 1 || archiveGuide.Archive("replay", archived, recording.Start.ToLocalTime().Date.AddDays(1), archiveNow).Any()) throw new Exception("Archive schedule");
+}
+
 static void Check(bool condition, string label) { if (!condition) throw new Exception(label); }
 var channels = Playlist.Parse(new[] {
     "\uFEFF#EXTM3U", "#EXTINF:-1 tvg-id=\"test\" group-title=\"Новости, мир\",Тест, HD",

@@ -26,7 +26,7 @@ public static class UpdateChecks
         try
         {
             var channel = new XElement("channel", new XAttribute("id", "test"), new XElement("display-name", "Тест"));
-            var first = new DateTimeOffset(now.UtcDateTime.Date.AddDays(-3), TimeSpan.Zero);
+            var first = new DateTimeOffset(now.UtcDateTime.Date.AddDays(-7), TimeSpan.Zero);
             var last = new DateTimeOffset(now.UtcDateTime.Date.AddDays(4), TimeSpan.Zero).AddSeconds(-1);
             var valid = new XElement("tv", channel,
                 Programme(first.AddSeconds(-1), "Слишком рано"), Programme(first, "Первая граница"),

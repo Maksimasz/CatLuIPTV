@@ -41,8 +41,15 @@ public partial class MainWindow : Window
     private bool updatingEpg;
     private CancellationTokenSource? epgUpdateCancellation;
     private Channel? playingChannel;
+    private StreamRecording? streamRecording;
+    private string recordingChannelName = "";
+    private long lastRecordingBytes;
+    private DateTimeOffset recordingLastGrowth;
+    private readonly System.Windows.Threading.DispatcherTimer recordingTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool archiveMode;
     private Programme? archiveProgramme;
+    private double archiveOffsetSeconds;
+    private readonly System.Windows.Threading.DispatcherTimer archiveProgressTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private Channel? archiveGuideChannel;
     private sealed record ArchiveDay(DateTime Date, string Label);
     private bool fullscreen;
@@ -59,6 +66,8 @@ public partial class MainWindow : Window
         // VideoView рисует содержимое поверх видео в отдельном окне; передаём ему стили.
         VideoOverlay.Resources.MergedDictionaries.Add(Resources);
         controlsIdle.Tick += ControlsIdle_Tick;
+        archiveProgressTimer.Tick += (_, _) => UpdateNow();
+        recordingTimer.Tick += (_, _) => UpdateRecording();
         try
         {
             Core.Initialize();
@@ -557,13 +566,14 @@ public partial class MainWindow : Window
         var channel = playingChannel ?? Channels.SelectedItem as Channel;
         CurrentChannel.Text = channel?.Name ?? "Выберите канал";
         LiveButton.Visibility = archiveProgramme is null ? Visibility.Collapsed : Visibility.Visible;
+        ArchiveSeekControls.Visibility = archiveProgramme is null ? Visibility.Collapsed : Visibility.Visible;
         if (archiveProgramme is { } recording)
         {
             NowTitle.Text = recording.Title;
             NextTitle.Text = $"Архив · {recording.Start.ToLocalTime():dd.MM.yyyy HH:mm}";
             ProgrammeStart.Text = recording.Start.ToLocalTime().ToString("HH:mm");
             ProgrammeEnd.Text = recording.Stop.ToLocalTime().ToString("HH:mm");
-            ProgrammeProgress.Value = player is null ? 0 : Math.Clamp(player.Time / (recording.Stop - recording.Start).TotalMilliseconds * 100, 0, 100);
+            ProgrammeProgress.Value = Math.Clamp((archiveOffsetSeconds + Math.Max(0, player?.Time ?? 0) / 1000d) / (recording.Stop - recording.Start).TotalSeconds * 100, 0, 100);
             return;
         }
         var id = channel is null ? null : epg?.Match(channel);
@@ -775,23 +785,31 @@ public partial class MainWindow : Window
         var channel = fullscreen ? playingChannel ?? selected : selected;
         if (channel is not null) PlayChannel(channel);
     }
-    private void PlayChannel(Channel channel, Programme? recording = null)
+    private void PlayChannel(Channel channel, Programme? recording = null, double offsetSeconds = 0)
     {
         if (player is null || vlc is null) return;
         try
         {
-            using var media = new Media(vlc, recording is null ? channel.Stream : channel.ArchiveStream(recording, DateTimeOffset.UtcNow));
-            if (recording is not null) media.AddOption($":run-time={(int)(recording.Stop - recording.Start).TotalSeconds}");
+            var now = DateTimeOffset.UtcNow;
+            offsetSeconds = recording?.SeekPosition(offsetSeconds, 0, now) ?? 0;
+            var segment = recording is null ? null : recording with { Start = recording.Start.AddSeconds(offsetSeconds) };
+            using var media = new Media(vlc, segment is null ? channel.Stream : channel.ArchiveStream(segment, now));
+            if (segment is not null) media.AddOption($":run-time={Math.Max(1, (int)(segment.Stop - segment.Start).TotalSeconds)}");
+            // Close the archive input before opening a fresh live session.
+            if (archiveProgramme is not null) player.Stop();
             if (player.Play(media))
             {
                 archiveProgramme = recording;
+                archiveOffsetSeconds = offsetSeconds;
+                if (recording is null) archiveProgressTimer.Stop(); else archiveProgressTimer.Start();
+                if (recording is null) SetArchiveMode(false);
                 playingChannel = channel;
                 settings.ChannelName = channel.Name;
                 settings.ChannelGroup = channel.Group;
                 SaveSettings();
                 PlaybackState.Text = "Подключение…";
                 Status.Text = $"Воспроизведение: {channel.Name}";
-                UpdateNow();
+                UpdateGuide();
             }
             else Status.Text = "Не удалось начать воспроизведение.";
         }
@@ -799,10 +817,19 @@ public partial class MainWindow : Window
     }
     private void ArchiveToggle_Click(object sender, RoutedEventArgs e)
     {
-        archiveMode = !archiveMode;
+        if (archiveMode && archiveProgramme is not null)
+        {
+            Live_Click(sender, e);
+            return;
+        }
+        SetArchiveMode(!archiveMode);
+        UpdateGuide();
+    }
+    private void SetArchiveMode(bool enabled)
+    {
+        archiveMode = enabled;
         ArchiveToggle.Content = archiveMode ? "Программа" : "Архив";
         ArchiveDate.Visibility = ReplayButton.Visibility = archiveMode ? Visibility.Visible : Visibility.Collapsed;
-        UpdateGuide();
     }
     private void ArchiveDate_Changed(object sender, SelectionChangedEventArgs e) { if (archiveMode) UpdateGuide(); }
     private void Replay_Click(object sender, RoutedEventArgs e)
@@ -821,13 +848,90 @@ public partial class MainWindow : Window
     private void Archive_KeyDown(object sender, KeyEventArgs e)
     { if (archiveMode && e.Key == Key.Enter) { Replay_Click(sender, e); e.Handled = true; } }
     private void Live_Click(object sender, RoutedEventArgs e)
-    { if (playingChannel is { } channel) PlayChannel(channel); }
+    {
+        SetArchiveMode(false);
+        if (playingChannel is { } channel) PlayChannel(channel);
+        UpdateGuide();
+    }
+    private void ArchiveBack_Click(object sender, RoutedEventArgs e) => SeekArchive(-30);
+    private void ArchiveForward_Click(object sender, RoutedEventArgs e) => SeekArchive(30);
+    private void SeekArchive(double seconds)
+    {
+        if (archiveProgramme is not { } programme || playingChannel is not { } channel || player is null) return;
+        var position = archiveOffsetSeconds + Math.Max(0, player.Time) / 1000d;
+        var target = programme.SeekPosition(position, seconds, DateTimeOffset.UtcNow);
+        // Reopen at the provider timestamp: archive HLS streams may not support VLC seeking.
+        PlayChannel(channel, programme, target);
+    }
     private void Pause_Click(object sender, RoutedEventArgs e) => player?.Pause();
+    private void Record_Click(object sender, RoutedEventArgs e)
+    {
+        if (streamRecording is not null) { StopRecording(); return; }
+        if (vlc is null || player?.IsPlaying != true || playingChannel is null || archiveProgramme is not null)
+        { Status.Text = "Для записи включите прямой эфир канала."; return; }
+        var safeName = string.Concat(playingChannel.Name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+        var dialog = new SaveFileDialog { Title = "Сохранить запись эфира", Filter = "Видео MPEG-TS (*.ts)|*.ts", DefaultExt = ".ts",
+            AddExtension = true, FileName = $"{safeName} {DateTime.Now:yyyy-MM-dd HH-mm-ss}.ts", OverwritePrompt = true };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            streamRecording = new StreamRecording(vlc, playingChannel.Stream, dialog.FileName);
+            streamRecording.Finished += (recording, failed) => Dispatcher.BeginInvoke(() =>
+            {
+                if (!closed && ReferenceEquals(streamRecording, recording)) StopRecording(failed ? "Поток записи прерван." : "Поток завершён.");
+            });
+            recordingChannelName = playingChannel.Name;
+            lastRecordingBytes = 0;
+            recordingLastGrowth = DateTimeOffset.UtcNow;
+            RecordButton.Content = "■ Стоп запись";
+            RecordButton.Foreground = new SolidColorBrush(Color.FromRgb(239, 133, 133));
+            RecordButton.ToolTip = "Остановить запись и сохранить файл";
+            RecordingInfo.Visibility = Visibility.Visible;
+            recordingTimer.Start();
+            UpdateRecording();
+            Status.Text = "Запись начата. Переключение каналов и пауза просмотра не останавливают запись.";
+        }
+        catch { Status.Text = "Не удалось начать запись. Выберите новое имя файла и доступную папку."; }
+    }
+    private void UpdateRecording()
+    {
+        if (streamRecording is not { } recording) return;
+        try
+        {
+            var bytes = recording.Bytes;
+            if (bytes > lastRecordingBytes) { lastRecordingBytes = bytes; recordingLastGrowth = DateTimeOffset.UtcNow; }
+            if (DateTimeOffset.UtcNow - recordingLastGrowth > TimeSpan.FromSeconds(60))
+            { StopRecording("Нет данных для записи в течение минуты."); return; }
+            var elapsed = DateTimeOffset.UtcNow - recording.Started;
+            RecordingInfo.Text = $"● {recordingChannelName} · {(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00} · {bytes / 1048576d:F1} МБ";
+            RecordingInfo.ToolTip = recording.Destination;
+        }
+        catch { StopRecording("Ошибка записи файла."); }
+    }
+    private void StopRecording(string reason = "")
+    {
+        var recording = streamRecording;
+        if (recording is null) return;
+        streamRecording = null;
+        recordingTimer.Stop();
+        RecordButton.Content = "● Запись";
+        RecordButton.ClearValue(Control.ForegroundProperty);
+        RecordButton.ToolTip = "Записать текущий эфир в TS";
+        RecordingInfo.Visibility = Visibility.Collapsed;
+        try
+        {
+            var bytes = recording.Stop();
+            Status.Text = reason + (bytes > 0 ? $" Запись сохранена: {recording.Destination}" : " Запись не получена: поток не передал данные.");
+        }
+        catch { Status.Text = $"Не удалось завершить сохранение. Полученная часть записи: {recording.PartialPath}"; }
+    }
     private void Stop_Click(object sender, RoutedEventArgs e) { player?.Stop(); Status.Text = "Воспроизведение остановлено."; }
     private void Volume_Changed(object sender, RoutedPropertyChangedEventArgs<double> e) { if (player is not null) player.Volume = (int)e.NewValue; }
     protected override void OnClosed(EventArgs e)
     {
         closed = true;
+        archiveProgressTimer.Stop();
+        StopRecording();
         lifetime.Cancel();
         timer.Stop();
         controlsIdle.Stop();

@@ -10,6 +10,8 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        if (Environment.GetEnvironmentVariable("EPG_RECORDING_FIXTURE") is { Length: > 0 } fixture)
+            Task.Run(() => RecordingChecks.Run(fixture)).GetAwaiter().GetResult();
         Task.Run(SourceChecks.Run).GetAwaiter().GetResult();
         Task.Run(AppUpdateChecks.Run).GetAwaiter().GetResult();
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
@@ -27,6 +29,19 @@ internal static class Program
         var root = (DockPanel)Named("RootDock");
         try
         {
+            Check(((Button)Named("RecordButton")).Content.ToString() == "● Запись" && ((TextBlock)Named("RecordingInfo")).Visibility == Visibility.Collapsed,
+                "Recording control uses the existing player panel without an idle status row");
+            Call("Record_Click", null, new RoutedEventArgs());
+            Check(Field<StreamRecording?>("streamRecording") is null, "Recording requires an active live channel");
+            Call("UpdateNow");
+            Check(((StackPanel)Named("ArchiveSeekControls")).Visibility == Visibility.Collapsed, "Seek buttons hidden in live mode");
+            typeof(MainWindow).GetField("archiveProgramme", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window,
+                new Programme(DateTimeOffset.UtcNow.AddHours(-2), DateTimeOffset.UtcNow.AddHours(-1), "Archive"));
+            Call("UpdateNow");
+            Check(((StackPanel)Named("ArchiveSeekControls")).Visibility == Visibility.Visible, "Seek buttons visible for archive playback");
+            typeof(MainWindow).GetField("archiveProgramme", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, null);
+            Call("UpdateNow");
+            Check(((StackPanel)Named("ArchiveSeekControls")).Visibility == Visibility.Collapsed, "Return to live hides archive seeking");
             var sources = (Button)Named("SourcesButton");
             Call("Sources_Click", sources, new RoutedEventArgs());
             Check(sources.ContextMenu.IsOpen && sources.ContextMenu.Items.Count == 4, "Sources button opens playlist, EPG and app update actions");
@@ -59,6 +74,10 @@ internal static class Program
             Check(((ComboBox)Named("ArchiveDate")).Visibility == Visibility.Visible && ((ComboBox)Named("ArchiveDate")).Items.Count == 8, "Archive days fit existing guide");
             Call("ArchiveToggle_Click", null, new RoutedEventArgs());
             Check(((ComboBox)Named("ArchiveDate")).Visibility == Visibility.Collapsed, "Programme view restored");
+            Call("ArchiveToggle_Click", null, new RoutedEventArgs());
+            Call("Live_Click", null, new RoutedEventArgs());
+            Check(!Field<bool>("archiveMode") && ((ComboBox)Named("ArchiveDate")).Visibility == Visibility.Collapsed && ((Button)Named("ReplayButton")).Visibility == Visibility.Collapsed,
+                "Return to live also leaves the archive guide and date filter");
             Check(settings.ChannelName == "Last played" && settings.ChannelGroup == "Saved group", "Highlighting a channel preserves the last played channel");
             Check(guide.Width.Value == 350, "Guide starts open");
             Call("ToggleGuide_Click", null, new RoutedEventArgs());
