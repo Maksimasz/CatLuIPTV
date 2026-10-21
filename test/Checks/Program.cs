@@ -109,7 +109,7 @@ try
     var developmentRoot = Path.Combine(pathsTest, "project");
     Check(AppPaths.ResolveDataDirectory(Path.Combine(developmentRoot, "IPTV"), pathsTest) == developmentRoot, "Existing development profile preserved");
     Check(AppPaths.ResolveDataDirectory(Path.Combine(developmentRoot, "IptvPlayer", "bin", "Debug"), pathsTest) == developmentRoot, "Dotnet run uses project profile");
-    var installedRoot = Path.Combine(pathsTest, "installed");
+    var installedRoot = Path.Combine(Path.GetPathRoot(pathsTest)!, "iptv-installed-check-" + Guid.NewGuid());
     Check(AppPaths.ResolveDataDirectory(installedRoot, Path.Combine(pathsTest, "user")) == Path.Combine(pathsTest, "user", "CatLu IPTV"), "Installed app uses user profile without fixed drive");
     var nestedSettings = Path.Combine(pathsTest, "new-profile", "settings.json");
     new PlayerSettings().Save(nestedSettings);
@@ -117,3 +117,110 @@ try
     Console.WriteLine("Проверки путей установленного плеера и совместимости рабочей копии: OK");
 }
 finally { Directory.Delete(pathsTest, recursive: true); }
+
+// Israel data must stay separate from primary IDs and non-Israeli broadcasts.
+var israelChannel = new Channel { Name = "Channel 9 FHD IL", Group = "ישראלי", Stream = new Uri("https://example.invalid/israel") };
+Check(Epg.IsraelChannelId(israelChannel) == "ישראלפלוס.il", "Israel channel 9 alias");
+Check(Epg.IsraelChannelId(new Channel { Name = "Keshet 12 HD IL", Stream = israelChannel.Stream }) == "קשת.il", "Keshet alias and HD suffix");
+Check(Epg.IsraelChannelId(new Channel { Name = "National Geographic", Stream = israelChannel.Stream }) is null, "Other regions do not use Israel schedule");
+using var israelXml = new MemoryStream(Encoding.UTF8.GetBytes("""
+<tv><channel id="ישראלפלוס.il"><display-name>IL - ישראל פלוס</display-name></channel>
+<programme channel="ישראלפלוס.il" start="20991020120000 +0300" stop="20991020130000 +0300"><title>Israel programme</title></programme></tv>
+"""));
+var israelGuide = Epg.Parse(israelXml);
+epg.AddIsrael(israelGuide, new[] { israelChannel });
+var israelId = epg.Match(israelChannel);
+Check(israelId == "israel:ישראלפלוס.il" && epg.Upcoming(israelId).Single().Title == "Israel programme", "Israel alias displays schedule");
+Check(epg.Upcoming("test").Single().Title != "Israel programme", "Primary schedule survives merge");
+using var emptyIsrael = new MemoryStream(Encoding.UTF8.GetBytes("<tv/>"));
+epg.AddIsrael(Epg.Parse(emptyIsrael), new[] { israelChannel });
+Check(epg.Match(israelChannel) is null, "Missing Israel mapping does not retain old match");
+using var primaryIsraelXml = new MemoryStream(Encoding.UTF8.GetBytes("""
+<tv><channel id="primary9"><display-name>Channel 9 FHD IL</display-name></channel>
+<programme channel="primary9" start="20991020120000 +0300" stop="20991020130000 +0300"><title>Primary fallback</title></programme></tv>
+"""));
+var primaryIsrael = Epg.Parse(primaryIsraelXml);
+primaryIsrael.AddIsrael(israelGuide, new[] { israelChannel });
+Check(primaryIsrael.Upcoming(primaryIsrael.Match(israelChannel)!).Single().Title == "Israel programme", "Israel schedule takes priority");
+using var expiredIsraelXml = new MemoryStream(Encoding.UTF8.GetBytes("""
+<tv><channel id="ישראלפלוס.il"/><programme channel="ישראלפלוס.il" start="20001020120000 +0300" stop="20001020130000 +0300"><title>Expired</title></programme></tv>
+"""));
+primaryIsrael.AddIsrael(Epg.Parse(expiredIsraelXml), new[] { israelChannel });
+Check(primaryIsrael.Match(israelChannel) == "primary9", "Expired Israel schedule falls back to primary");
+Console.WriteLine("Israel merge, aliases and regional isolation: OK");
+if (args.Length == 3 && args[0] == "--israel")
+{
+    var localChannels = Playlist.Read(args[1]);
+    var installed = EpgUpdater.InstallArchive(args[2], EpgUpdater.IsraelPath, DateTimeOffset.UtcNow);
+    var combined = Epg.Read(AppPaths.EpgPath);
+    combined.AddIsrael(installed.Guide, localChannels);
+    var israelChannels = localChannels.Where(c => c.Group == "ישראלי").ToList();
+    Console.WriteLine($"Israel coverage: {israelChannels.Count(c => combined.Match(c) is string id && id.StartsWith("israel:") && combined.Upcoming(id).Any())}/{israelChannels.Count}");
+    foreach (var name in new[] { "Channel 9 FHD IL", "Channel 11 HD IL", "Keshet 12 HD IL", "Reshet 13 HD IL" })
+    {
+        var channel = israelChannels.Single(c => c.Name == name);
+        var id = combined.Match(channel);
+        Check(id is not null && combined.Upcoming(id).Any(), "Real Israel schedule: " + name);
+        Console.WriteLine(name + ": " + combined.Upcoming(id!).First().Title);
+    }
+}
+
+RegionalChecks.Run();
+if (args.Length == 3 && args[0] == "--regional")
+{
+    var localChannels = Playlist.Read(args[1]);
+    var installed = EpgUpdater.InstallArchive(args[2], EpgUpdater.RegionalPath, DateTimeOffset.UtcNow);
+    var combined = Epg.Read(AppPaths.EpgPath);
+    combined.AddIsrael(Epg.Read(EpgUpdater.IsraelPath), localChannels);
+    var before = localChannels.Count(c => combined.Match(c) is string id && combined.Upcoming(id).Any());
+    combined.AddRegional(installed.Guide, localChannels);
+    var after = localChannels.Count(c => combined.Match(c) is string id && combined.Upcoming(id).Any());
+    Console.WriteLine($"Actual playlist coverage: {before} -> {after} / {localChannels.Count}; added: {after - before}");
+    Check(after > before, "Regional source improves actual playlist coverage");
+    foreach (var channel in localChannels.Where(c => combined.Match(c)?.StartsWith("regional:") == true).Take(15))
+        Console.WriteLine(channel.Name + ": " + combined.Upcoming(combined.Match(channel)!).First().Title);
+}
+
+BcuChecks.Run();
+if (args.Length == 3 && args[0] == "--bcu")
+{
+    var localChannels = Playlist.Read(args[1]);
+    var installed = EpgUpdater.InstallArchive(args[2], EpgUpdater.BcuPath, DateTimeOffset.UtcNow);
+    var combined = Epg.Read(AppPaths.EpgPath);
+    combined.AddIsrael(Epg.Read(EpgUpdater.IsraelPath), localChannels);
+    combined.AddRegional(Epg.Read(EpgUpdater.RegionalPath), localChannels);
+    var before = localChannels.Count(c => combined.Match(c) is string id && combined.Upcoming(id).Any());
+    combined.AddBcu(installed.Guide, localChannels);
+    var after = localChannels.Count(c => combined.Match(c) is string id && combined.Upcoming(id).Any());
+    Console.WriteLine($"Actual BCU coverage: {before} -> {after} / {localChannels.Count}; added: {after - before}");
+    Check(after > before, "BCU improves actual playlist coverage");
+    foreach (var channel in localChannels.Where(c => combined.Match(c)?.StartsWith("bcu:") == true))
+        Console.WriteLine(channel.Name + ": " + combined.Upcoming(combined.Match(channel)!).First().Title);
+}
+
+ExtraChecks.Run();
+if (args.Length == 3 && args[0] == "--extras")
+{
+    var localChannels = Playlist.Read(args[1]);
+    var combined = Epg.Read(AppPaths.EpgPath);
+    combined.AddIsrael(Epg.Read(EpgUpdater.IsraelPath), localChannels);
+    combined.AddRegional(Epg.Read(EpgUpdater.RegionalPath), localChannels);
+    combined.AddBcu(Epg.Read(EpgUpdater.BcuPath), localChannels);
+    var before = localChannels.Count(c => combined.Match(c) is string id && combined.Upcoming(id).Any());
+    var iptvx = EpgUpdater.InstallArchive(Path.Combine(args[2], "epg (2).xml.gz"), EpgUpdater.IptvxPath, DateTimeOffset.UtcNow);
+    combined.AddRegional(iptvx.Guide, localChannels, "iptvx");
+    var middle = localChannels.Count(c => combined.Match(c) is string id && combined.Upcoming(id).Any());
+    Console.WriteLine($"IPTVX coverage: {before} -> {middle}");
+    var tvteam = EpgUpdater.InstallArchive(Path.Combine(args[2], "7.2.xml"), EpgUpdater.TvteamPath, DateTimeOffset.UtcNow);
+    combined.AddRegional(tvteam.Guide, localChannels, "tvteam");
+    var after = localChannels.Count(c => combined.Match(c) is string id && combined.Upcoming(id).Any());
+    Check(after > before, "Both new sources improve actual coverage");
+    Console.WriteLine($"TVTeam coverage: {middle} -> {after} / {localChannels.Count}; total added: {after - before}");
+    foreach (var name in new[] { "Channel 9 FHD IL", "Channel 11 HD IL", "Keshet 12 HD IL", "Reshet 13 HD IL" })
+    {
+        var channel = localChannels.Single(c => c.Name == name);
+        var id = combined.Match(channel);
+        Check(id?.StartsWith("iptvx:") == true && combined.HasRussianSchedule(id), "Actual Russian Israel schedule: " + name);
+        Console.WriteLine(name + " -> " + id + ": " + combined.Upcoming(id!).First().Title);
+    }
+}

@@ -25,6 +25,20 @@ internal static class Program
         var root = (DockPanel)Named("RootDock");
         try
         {
+            var sources = (Button)Named("SourcesButton");
+            Call("Sources_Click", sources, new RoutedEventArgs());
+            Check(sources.ContextMenu.IsOpen && sources.ContextMenu.Items.Count == 3, "Sources button opens all playlist and EPG actions");
+            Check(ReferenceEquals(Named("OpenPlaylist"), sources.ContextMenu.Items[0]) &&
+                ReferenceEquals(Named("OpenEpg"), sources.ContextMenu.Items[1]) &&
+                ReferenceEquals(Named("RefreshEpg"), sources.ContextMenu.Items[2]), "Existing actions are accessible in the menu");
+            sources.ContextMenu.IsOpen = false;
+            var settings = Field<PlayerSettings>("settings");
+            settings.ChannelName = "Last played";
+            settings.ChannelGroup = "Saved group";
+            var list = (ListBox)Named("Channels");
+            list.ItemsSource = new[] { new Channel { Name = "Only highlighted", Group = "Other group", Stream = new Uri("https://example.invalid/test") } };
+            list.SelectedIndex = 0;
+            Check(settings.ChannelName == "Last played" && settings.ChannelGroup == "Saved group", "Highlighting a channel preserves the last played channel");
             Check(guide.Width.Value == 350, "Guide starts open");
             Call("ToggleGuide_Click", null, new RoutedEventArgs());
             Check(guide.Width.Value == 0 && gap.Width.Value == 0, "Guide collapses including gap");

@@ -36,8 +36,15 @@ public static class UpdateChecks
             var result = EpgUpdater.InstallArchive(archive, target, now);
             Check(result.Count == 3 && result.Guide.Upcoming("test").Count() == 2, "Update date boundaries and EPG reload");
             var original = File.ReadAllBytes(target);
+            Check(!EpgUpdater.NeedsUpdate(target, now), "Fresh cache skips automatic download");
+            Check(EpgUpdater.NeedsUpdate(target, now.AddHours(13)), "Old cache refreshes automatically");
+            Check(EpgUpdater.NeedsUpdate(target + ".missing", now), "Missing cache downloads automatically");
+            File.WriteAllText(archive, valid);
+            Check(EpgUpdater.InstallArchive(archive, target, now).Count == 3, "Uncompressed Israel XML is accepted");
+
 
             foreach (var invalid in new[] { "<tv><broken>", "<html/>", "<tv/>",
+                new XElement("tv", channel, Programme(now, "No Data")).ToString(),
                 new XElement("tv", channel, Programme(now.AddDays(-2), "Только прошлое")).ToString(),
                 new XElement("tv", Programme(now, "Нет описания канала")).ToString() })
             {
@@ -48,7 +55,7 @@ public static class UpdateChecks
             }
             File.WriteAllText(archive, "not gzip");
             bool badGzip = false;
-            try { EpgUpdater.InstallArchive(archive, target, now); } catch (InvalidDataException) { badGzip = true; }
+            try { EpgUpdater.InstallArchive(archive, target, now); } catch (System.Xml.XmlException) { badGzip = true; }
             Check(badGzip && File.ReadAllBytes(target).SequenceEqual(original), "Invalid gzip preserves EPG");
 
             WriteArchive(valid);

@@ -78,12 +78,18 @@
     <Image Source="Assets/catlu.png" Width="32" Height="32" Margin="0,0,10,0" AutomationProperties.Name="Кот CatLu"/>
     <TextBlock Text="CatLu IPTV" FontSize="23" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,22,0"/>
     <Button Content="☰  Каналы" Click="ToggleChannels_Click"/>
-    <Button Content="Программа" Click="ToggleGuide_Click" Margin="8,0,0,0"/>
    </StackPanel>
    <StackPanel Grid.Column="1" Orientation="Horizontal">
-    <Button x:Name="OpenPlaylist" Content="Открыть M3U" Click="OpenPlaylist_Click" Margin="0,0,8,0"/>
-    <Button x:Name="OpenEpg" Content="Открыть EPG" Click="OpenEpg_Click" Margin="0,0,8,0"/>
-    <Button x:Name="RefreshEpg" Content="↻  Обновить EPG" Click="RefreshEpg_Click" Background="#383B27" Foreground="{StaticResource Accent}"/>
+    <Button Content="Программы" Click="ToggleGuide_Click" Margin="0,0,8,0"/>
+    <Button x:Name="SourcesButton" Content="⚙" Click="Sources_Click" FontSize="18" Padding="12,6" ToolTip="Плейлист и EPG" AutomationProperties.Name="Плейлист и EPG">
+     <Button.ContextMenu>
+      <ContextMenu Background="#252A32" Foreground="#ECEEF2">
+       <MenuItem x:Name="OpenPlaylist" Header="Открыть M3U" Click="OpenPlaylist_Click"/>
+       <MenuItem x:Name="OpenEpg" Header="Открыть EPG" Click="OpenEpg_Click"/>
+       <MenuItem x:Name="RefreshEpg" Header="Обновить EPG" Click="RefreshEpg_Click"/>
+      </ContextMenu>
+     </Button.ContextMenu>
+    </Button>
    </StackPanel>
   </Grid>
   <TextBlock x:Name="Status" DockPanel.Dock="Bottom" Text="Загрузка…" Foreground="#A3AAB5" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap"/>

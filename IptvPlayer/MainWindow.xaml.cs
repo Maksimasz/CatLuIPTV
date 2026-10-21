@@ -23,6 +23,13 @@ public partial class MainWindow : Window
     private MediaPlayer? player;
     private List<Channel> channels = [];
     private Epg? epg;
+    private Epg? israelEpg;
+    private Epg? regionalEpg;
+    private Epg? bcuEpg;
+    private Epg? iptvxEpg;
+    private Epg? tvteamEpg;
+    private bool primaryEpgLoaded;
+    private bool updatingEpg;
     private Channel? playingChannel;
     private bool fullscreen;
     private WindowState previousWindowState;
@@ -71,10 +78,22 @@ public partial class MainWindow : Window
             try { Directory.CreateDirectory(AppPaths.ResourcesDirectory); settings = PlayerSettings.Read(SettingsPath); }
             catch { errors.Add("Настройки повреждены или недоступны; используются стандартные пути."); }
             Status.Text = "Загрузка сохранённых файлов…";
-            if (!string.IsNullOrEmpty(settings.PlaylistPath) && !await LoadPlaylist(settings.PlaylistPath))
+            bool playlistLoaded = false;
+            if (!string.IsNullOrEmpty(settings.PlaylistPath) && !(playlistLoaded = await LoadPlaylist(settings.PlaylistPath)))
                 errors.Add("Плейлист недоступен или пуст. Выберите его через «Открыть M3U…».");
+            if (playlistLoaded && !closed)
+            {
+                var lastChannel = channels.FirstOrDefault(c => c.Name == settings.ChannelName &&
+                    (c.Group == settings.ChannelGroup || string.IsNullOrEmpty(settings.ChannelGroup)));
+                if (lastChannel is not null) PlayChannel(lastChannel);
+            }
             if (!closed && !string.IsNullOrEmpty(settings.EpgPath) && !await LoadEpg(settings.EpgPath))
                 errors.Add("EPG недоступен. Нажмите «Обновить EPG» или выберите файл через «Открыть EPG…».");
+            if (!closed) await LoadIsraelEpg();
+            if (!closed) await LoadRegionalEpg();
+            if (!closed) await LoadBcuEpg();
+            if (!closed) await LoadExtraEpg(iptvx: true);
+            if (!closed) await LoadExtraEpg(iptvx: false);
         }
         finally
         {
@@ -82,9 +101,87 @@ public partial class MainWindow : Window
             if (!closed)
             {
                 OpenPlaylist.IsEnabled = OpenEpg.IsEnabled = RefreshEpg.IsEnabled = true;
-                Status.Text = errors.Count > 0 ? string.Join(" ", errors) : $"Загружено каналов: {channels.Count}. Для просмотра нажмите «Воспроизвести».";
+                Status.Text = errors.Count > 0 ? string.Join(" ", errors) : playingChannel is not null ? $"Воспроизводится: {playingChannel.Name}" : $"Загружено каналов: {channels.Count}. Для просмотра нажмите «Воспроизвести».";
             }
         }
+        if (!closed)
+        {
+            await UpdateEpg(staleOnly: true);
+        }
+    }
+
+    private async Task<bool> LoadIsraelEpg()
+    {
+        var path = File.Exists(EpgUpdater.IsraelPath) ? EpgUpdater.IsraelPath
+            : Path.Combine(AppPaths.ResourcesDirectory, "epg-il.xml");
+        try
+        {
+            var loaded = await Task.Run(() => Epg.Read(path));
+            if (closed) return false;
+            israelEpg = loaded;
+            AttachSupplementalEpg();
+            UpdateGuide();
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private async Task LoadRegionalEpg()
+    {
+        var path = File.Exists(EpgUpdater.RegionalPath) ? EpgUpdater.RegionalPath
+            : Path.Combine(AppPaths.ResourcesDirectory, "epg-zahaujlugl.xml");
+        try
+        {
+            var loaded = await Task.Run(() => Epg.Read(path));
+            if (closed) return;
+            regionalEpg = loaded;
+            AttachSupplementalEpg();
+            UpdateGuide();
+        }
+        catch { }
+    }
+
+    private async Task LoadBcuEpg()
+    {
+        var path = File.Exists(EpgUpdater.BcuPath) ? EpgUpdater.BcuPath
+            : Path.Combine(AppPaths.ResourcesDirectory, "epg (1).xml.gz");
+        try
+        {
+            var loaded = await Task.Run(() => Epg.Read(path));
+            if (closed) return;
+            bcuEpg = loaded;
+            AttachSupplementalEpg();
+            UpdateGuide();
+        }
+        catch { }
+    }
+
+    private async Task LoadExtraEpg(bool iptvx)
+    {
+        var cache = iptvx ? EpgUpdater.IptvxPath : EpgUpdater.TvteamPath;
+        var original = iptvx ? Path.Combine(AppPaths.ResourcesDirectory, "epg (2).xml.gz")
+            : Path.Combine(AppPaths.ResourcesDirectory, "7.2.xml");
+        if (iptvx && !File.Exists(original)) original = Path.Combine(AppPaths.ResourcesDirectory, "epg (2).xml", "epg.xml");
+        try
+        {
+            var loaded = await Task.Run(() => Epg.Read(File.Exists(cache) ? cache : original));
+            if (closed) return;
+            if (iptvx) iptvxEpg = loaded; else tvteamEpg = loaded;
+            AttachSupplementalEpg();
+            UpdateGuide();
+        }
+        catch { }
+    }
+
+    private void AttachSupplementalEpg()
+    {
+        if (israelEpg is null && regionalEpg is null && bcuEpg is null && iptvxEpg is null && tvteamEpg is null) return;
+        epg ??= new Epg();
+        if (israelEpg is not null) epg.AddIsrael(israelEpg, channels);
+        if (regionalEpg is not null) epg.AddRegional(regionalEpg, channels);
+        if (bcuEpg is not null) epg.AddBcu(bcuEpg, channels);
+        if (iptvxEpg is not null) epg.AddRegional(iptvxEpg, channels, "iptvx");
+        if (tvteamEpg is not null) epg.AddRegional(tvteamEpg, channels, "tvteam");
     }
 
     private async Task<bool> LoadPlaylist(string path)
@@ -94,6 +191,7 @@ public partial class MainWindow : Window
             var loaded = await Task.Run(() => Playlist.Read(path));
             if (closed || loaded.Count == 0) return false;
             channels = loaded;
+            AttachSupplementalEpg();
             settings.PlaylistPath = path;
             rebuildingFilters = true;
             try
@@ -130,6 +228,8 @@ public partial class MainWindow : Window
             var loaded = await Task.Run(() => Epg.Read(path));
             if (closed) return false;
             epg = loaded;
+            primaryEpgLoaded = true;
+            AttachSupplementalEpg();
             settings.EpgPath = path;
             UpdateGuide();
             return true;
@@ -175,31 +275,63 @@ public partial class MainWindow : Window
         finally { if (!closed) OpenEpg.IsEnabled = RefreshEpg.IsEnabled = true; }
     }
 
-    private async void RefreshEpg_Click(object sender, RoutedEventArgs e)
+    private async void RefreshEpg_Click(object sender, RoutedEventArgs e) => await UpdateEpg(staleOnly: false);
+
+    private async Task UpdateEpg(bool staleOnly)
     {
+        if (closed || updatingEpg) return;
+        updatingEpg = true;
         OpenPlaylist.IsEnabled = OpenEpg.IsEnabled = RefreshEpg.IsEnabled = false;
-        var progress = new Progress<string>(message => { if (!closed) Status.Text = message; });
+        var messages = new List<string>();
+        IProgress<string> progress = new Progress<string>(message => { if (!closed) Status.Text = message; });
         try
         {
-            var result = await EpgUpdater.UpdateAsync(EpgUpdater.TargetPath, progress, lifetime.Token);
-            if (closed) return;
-            epg = result.Guide;
-            settings.EpgPath = EpgUpdater.TargetPath;
-            UpdateGuide();
-            Status.Text = $"EPG обновлён. Передач: {result.Count:N0}. Период: 3 дня назад и 3 дня вперёд.";
-            SaveSettings();
-        }
-        catch (OperationCanceledException)
-        {
-            if (!closed) Status.Text = "Обновление прервано или сервер не ответил вовремя. Предыдущая программа сохранена.";
-        }
-        catch
-        {
-            if (!closed) Status.Text = "Не удалось обновить EPG. Проверьте интернет и повторите попытку. Предыдущая программа сохранена.";
+            foreach (var source in new[] { "main", "israel", "regional", "bcu", "iptvx", "tvteam" })
+            {
+                if (closed) return;
+                var (path, url, name, cachedPath, loaded) = source switch
+                {
+                    "israel" => (EpgUpdater.IsraelPath, EpgUpdater.IsraelUrl, "Израиль",
+                        File.Exists(EpgUpdater.IsraelPath) ? EpgUpdater.IsraelPath : Path.Combine(AppPaths.ResourcesDirectory, "epg-il.xml"), israelEpg is not null),
+                    "regional" => (EpgUpdater.RegionalPath, EpgUpdater.RegionalUrl, "Дополнительный EPG",
+                        File.Exists(EpgUpdater.RegionalPath) ? EpgUpdater.RegionalPath : Path.Combine(AppPaths.ResourcesDirectory, "epg-zahaujlugl.xml"), regionalEpg is not null),
+                    "bcu" => (EpgUpdater.BcuPath, EpgUpdater.BcuUrl, "BCU Media",
+                        File.Exists(EpgUpdater.BcuPath) ? EpgUpdater.BcuPath : Path.Combine(AppPaths.ResourcesDirectory, "epg (1).xml.gz"), bcuEpg is not null),
+                    "iptvx" => (EpgUpdater.IptvxPath, EpgUpdater.IptvxUrl, "IPTVX.one",
+                        File.Exists(EpgUpdater.IptvxPath) ? EpgUpdater.IptvxPath : Path.Combine(AppPaths.ResourcesDirectory, "epg (2).xml.gz"), iptvxEpg is not null),
+                    "tvteam" => (EpgUpdater.TvteamPath, EpgUpdater.TvteamUrl, "TVTeam",
+                        File.Exists(EpgUpdater.TvteamPath) ? EpgUpdater.TvteamPath : Path.Combine(AppPaths.ResourcesDirectory, "7.2.xml"), tvteamEpg is not null),
+                    _ => (EpgUpdater.TargetPath, "http://epg.one/epg2.xml.gz", "Основной EPG", settings.EpgPath ?? EpgUpdater.TargetPath, primaryEpgLoaded)
+                };
+                if (staleOnly && loaded && !EpgUpdater.NeedsUpdate(cachedPath, DateTimeOffset.UtcNow)) continue;
+                try
+                {
+                    progress.Report($"Обновление: {name}…");
+                    var result = await EpgUpdater.UpdateAsync(path, progress, lifetime.Token, url);
+                    if (closed) return;
+                    if (source == "iptvx") iptvxEpg = result.Guide;
+                    else if (source == "tvteam") tvteamEpg = result.Guide;
+                    else if (source == "bcu") bcuEpg = result.Guide;
+                    else if (source == "regional") regionalEpg = result.Guide;
+                    else if (source == "israel") israelEpg = result.Guide;
+                    else { epg = result.Guide; primaryEpgLoaded = true; settings.EpgPath = path; }
+                    AttachSupplementalEpg();
+                    UpdateGuide();
+                    messages.Add($"{name}: обновлено ({result.Count:N0} передач).");
+                    SaveSettings();
+                }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
+                catch { messages.Add($"{name}: обновить не удалось; используется сохранённая программа, если она доступна."); }
+            }
         }
         finally
         {
-            if (!closed) OpenPlaylist.IsEnabled = OpenEpg.IsEnabled = RefreshEpg.IsEnabled = true;
+            updatingEpg = false;
+            if (!closed)
+            {
+                OpenPlaylist.IsEnabled = OpenEpg.IsEnabled = RefreshEpg.IsEnabled = true;
+                if (messages.Count > 0) Status.Text = string.Join(" ", messages);
+            }
         }
     }
 
@@ -252,10 +384,6 @@ public partial class MainWindow : Window
     private void Channel_Changed(object sender, SelectionChangedEventArgs e)
     {
         UpdateGuide();
-        if (Channels.SelectedItem is not Channel channel) return;
-        settings.ChannelName = channel.Name;
-        settings.ChannelGroup = channel.Group;
-        SaveSettings();
     }
     private void UpdateGuide()
     {
@@ -294,6 +422,13 @@ public partial class MainWindow : Window
     }
 
     private void SetPlaybackState(string text) => Dispatcher.BeginInvoke(() => { if (!closed) PlaybackState.Text = text; });
+    private void Sources_Click(object sender, RoutedEventArgs e)
+    {
+        SourcesButton.ContextMenu.PlacementTarget = SourcesButton;
+        SourcesButton.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        SourcesButton.ContextMenu.IsOpen = true;
+    }
+
     private void ToggleChannels_Click(object sender, RoutedEventArgs e)
     {
         ChannelsColumn.Width = new GridLength(ChannelsColumn.Width.Value == 0 ? 250 : 0);
@@ -393,23 +528,28 @@ public partial class MainWindow : Window
     {
         if (fullscreen) ShowFullscreenControls();
         if (e.Key == Key.F11 || e.Key == Key.Escape && fullscreen) { ToggleFullscreen(); e.Handled = true; }
-        else if (e.Key == Key.Escape) { ChannelsColumn.Width = new GridLength(0); e.Handled = true; }
     }
 
     private void Play_Click(object sender, RoutedEventArgs e)
     {
         var selected = Channels.SelectedItem as Channel;
         var channel = fullscreen ? playingChannel ?? selected : selected;
-        if (channel is null || player is null || vlc is null) return;
+        if (channel is not null) PlayChannel(channel);
+    }
+    private void PlayChannel(Channel channel)
+    {
+        if (player is null || vlc is null) return;
         try
         {
             using var media = new Media(vlc, channel.Stream);
             if (player.Play(media))
             {
                 playingChannel = channel;
+                settings.ChannelName = channel.Name;
+                settings.ChannelGroup = channel.Group;
+                SaveSettings();
                 PlaybackState.Text = "Подключение…";
                 Status.Text = $"Воспроизведение: {channel.Name}";
-                ChannelsColumn.Width = new GridLength(0);
                 UpdateNow();
             }
             else Status.Text = "Не удалось начать воспроизведение.";
