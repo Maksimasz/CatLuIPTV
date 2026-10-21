@@ -10,6 +10,7 @@ AppVersion={#AppVersion}
 AppPublisher=CatLu
 AppPublisherURL=https://github.com/Maksimasz/windows-iptv-player
 DefaultDirName={localappdata}\Programs\CatLu IPTV
+UsePreviousAppDir=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -34,7 +35,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Ярлыки:"; Flags: unchecked
 
 [Files]
-Source: "..\release\{#AppVersion}\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\release\{#AppVersion}\app\*"; DestDir: "{app}"; Excludes: "player-settings.json,resurses\*,updates\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\CatLu IPTV"; Filename: "{app}\CatLu IPTV.exe"; WorkingDir: "{app}"

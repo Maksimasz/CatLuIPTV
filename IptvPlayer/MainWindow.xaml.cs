@@ -15,6 +15,15 @@ public partial class MainWindow : Window
     private static readonly string SettingsPath = AppPaths.SettingsPath;
     private PlayerSettings settings = new();
     private bool restoring;
+    private int playlistLoadVersion;
+    private int epgLoadVersion;
+    private bool epgChosenDuringRestore;
+    private bool rebuildingPlaylists;
+    private readonly AppUpdater appUpdater = new();
+    private AppRelease? availableAppRelease;
+    private DateTimeOffset lastAppUpdateCheck = DateTimeOffset.MinValue;
+    private bool checkingAppUpdate;
+    private bool installingAppUpdate;
     private bool closed;
     private bool rebuildingFilters;
     private sealed record GroupChoice(string? Value, string Label);
@@ -30,6 +39,7 @@ public partial class MainWindow : Window
     private Epg? tvteamEpg;
     private bool primaryEpgLoaded;
     private bool updatingEpg;
+    private CancellationTokenSource? epgUpdateCancellation;
     private Channel? playingChannel;
     private bool fullscreen;
     private WindowState previousWindowState;
@@ -63,7 +73,11 @@ public partial class MainWindow : Window
             });
         }
         catch { Status.Text = "Не удалось загрузить LibVLC. Проверьте комплект файлов приложения (Windows x64)."; }
-        timer.Tick += (_, _) => UpdateGuide();
+        timer.Tick += async (_, _) =>
+        {
+            UpdateGuide();
+            if (AppUpdater.IsDue(DateTimeOffset.UtcNow, lastAppUpdateCheck)) await CheckAppUpdates(false);
+        };
         timer.Start();
         Loaded += RestoreSession;
     }
@@ -71,12 +85,13 @@ public partial class MainWindow : Window
     private async void RestoreSession(object sender, RoutedEventArgs e)
     {
         restoring = true;
-        OpenPlaylist.IsEnabled = OpenEpg.IsEnabled = RefreshEpg.IsEnabled = false;
         var errors = new List<string>();
         try
         {
             try { Directory.CreateDirectory(AppPaths.ResourcesDirectory); settings = PlayerSettings.Read(SettingsPath); }
             catch { errors.Add("Настройки повреждены или недоступны; используются стандартные пути."); }
+            RefreshPlaylistSelector();
+            _ = CheckAppUpdates(false);
             Status.Text = "Загрузка сохранённых файлов…";
             bool playlistLoaded = false;
             if (!string.IsNullOrEmpty(settings.PlaylistPath) && !(playlistLoaded = await LoadPlaylist(settings.PlaylistPath)))
@@ -87,7 +102,7 @@ public partial class MainWindow : Window
                     (c.Group == settings.ChannelGroup || string.IsNullOrEmpty(settings.ChannelGroup)));
                 if (lastChannel is not null) PlayChannel(lastChannel);
             }
-            if (!closed && !string.IsNullOrEmpty(settings.EpgPath) && !await LoadEpg(settings.EpgPath))
+            if (!closed && !epgChosenDuringRestore && !string.IsNullOrEmpty(settings.EpgPath) && !await LoadEpg(settings.EpgPath))
                 errors.Add("EPG недоступен. Нажмите «Обновить EPG» или выберите файл через «Открыть EPG…».");
             if (!closed) await LoadIsraelEpg();
             if (!closed) await LoadRegionalEpg();
@@ -98,6 +113,7 @@ public partial class MainWindow : Window
         finally
         {
             restoring = false;
+            SaveSettings();
             if (!closed)
             {
                 OpenPlaylist.IsEnabled = OpenEpg.IsEnabled = RefreshEpg.IsEnabled = true;
@@ -184,12 +200,13 @@ public partial class MainWindow : Window
         if (tvteamEpg is not null) epg.AddRegional(tvteamEpg, channels, "tvteam");
     }
 
-    private async Task<bool> LoadPlaylist(string path)
+    private async Task<bool> LoadPlaylist(string path, List<Channel>? prepared = null)
     {
+        var version = ++playlistLoadVersion;
         try
         {
-            var loaded = await Task.Run(() => Playlist.Read(path));
-            if (closed || loaded.Count == 0) return false;
+            var loaded = prepared ?? await RemoteSource.ReadPlaylist(path, lifetime.Token);
+            if (closed || version != playlistLoadVersion || loaded.Count == 0) return false;
             channels = loaded;
             AttachSupplementalEpg();
             settings.PlaylistPath = path;
@@ -223,10 +240,18 @@ public partial class MainWindow : Window
 
     private async Task<bool> LoadEpg(string path)
     {
+        var version = ++epgLoadVersion;
         try
         {
-            var loaded = await Task.Run(() => Epg.Read(path));
-            if (closed) return false;
+            Epg loaded;
+            if (RemoteSource.IsUrl(path))
+            {
+                var cache = RemoteSource.CachePath(path, ".xml.gz");
+                try { loaded = (await EpgUpdater.UpdateAsync(cache, cancellation: lifetime.Token, sourceUrl: path)).Guide; }
+                catch when (!lifetime.IsCancellationRequested && File.Exists(cache)) { loaded = await Task.Run(() => Epg.Read(cache)); }
+            }
+            else loaded = await Task.Run(() => Epg.Read(path));
+            if (closed || version != epgLoadVersion) return false;
             epg = loaded;
             primaryEpgLoaded = true;
             AttachSupplementalEpg();
@@ -244,30 +269,114 @@ public partial class MainWindow : Window
         catch { Status.Text += " Не удалось сохранить настройки; выбор может не восстановиться при следующем запуске."; }
     }
 
-    private async void OpenPlaylist_Click(object sender, RoutedEventArgs e)
+    private void RefreshPlaylistSelector()
     {
-        var dialog = new OpenFileDialog { Filter = "Плейлисты|*.m3u;*.m3u8", InitialDirectory = AppPaths.ResourcesDirectory };
-        if (dialog.ShowDialog(this) != true) return;
-        OpenPlaylist.IsEnabled = RefreshEpg.IsEnabled = false;
+        rebuildingPlaylists = true;
         try
         {
-            if (!await LoadPlaylist(dialog.FileName)) { Status.Text = "Не удалось прочитать плейлист: файл недоступен, повреждён или не содержит каналов."; return; }
-            Status.Text = $"Загружено каналов: {channels.Count}. Выберите канал и нажмите «Воспроизвести».";
-            SaveSettings();
+            PlaylistSelector.ItemsSource = settings.Playlists.ToArray();
+            PlaylistSelector.SelectedItem = settings.Playlists.FirstOrDefault(p => p.Id == settings.ActivePlaylistId);
         }
-        catch { Status.Text = "Не удалось прочитать плейлист. Проверьте файл и права доступа."; }
-        finally { if (!closed) OpenPlaylist.IsEnabled = RefreshEpg.IsEnabled = true; }
+        finally { rebuildingPlaylists = false; }
+    }
+
+    private void ClearPlaylistChannels()
+    {
+        ++playlistLoadVersion;
+        player?.Stop();
+        playingChannel = null;
+        settings.ChannelName = settings.ChannelGroup = settings.SelectedGroup = null;
+        channels = [];
+        rebuildingFilters = true;
+        try { Groups.ItemsSource = null; Search.Clear(); }
+        finally { rebuildingFilters = false; }
+        FilterChannels();
+        UpdateGuide();
+    }
+
+    private async void PlaylistSelector_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (rebuildingPlaylists || PlaylistSelector.SelectedItem is not SavedPlaylist selected) return;
+        settings.ActivePlaylistId = selected.Id;
+        settings.PlaylistPath = selected.Source;
+        ClearPlaylistChannels();
+        Status.Text = "Загрузка плейлиста: " + selected.Name;
+        var loaded = await LoadPlaylist(selected.Source);
+        if (settings.ActivePlaylistId != selected.Id || closed) return;
+        Status.Text = loaded ? $"{selected.Name}: {channels.Count} каналов." : "Не удалось загрузить выбранный плейлист.";
+        SaveSettings();
+    }
+
+    private void Playlists_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = PlaylistManager.Create(this, settings.Playlists, ChangePlaylist);
+        dialog.Owner = this;
+        dialog.ShowDialog();
+    }
+
+    private async Task<bool> ChangePlaylist(SavedPlaylist? previous, SavedPlaylist? replacement)
+    {
+        List<Channel>? prepared = null;
+        if (replacement is not null)
+        {
+            try { prepared = await RemoteSource.ReadPlaylist(replacement.Source, lifetime.Token); }
+            catch (System.Net.Http.HttpRequestException error)
+            {
+                throw new InvalidOperationException(error.StatusCode is { } code
+                    ? $"Сервер плейлиста вернул HTTP {(int)code}. Проверьте доступ к подписке."
+                    : error.HttpRequestError switch
+                    {
+                        System.Net.Http.HttpRequestError.NameResolutionError => "Не удалось определить адрес сервера (DNS).",
+                        System.Net.Http.HttpRequestError.SecureConnectionError => "Не удалось установить защищённое соединение с сервером (TLS).",
+                        System.Net.Http.HttpRequestError.ProxyTunnelError => "Ошибка подключения через системный прокси.",
+                        _ => $"Ошибка подключения к серверу: {error.HttpRequestError}" +
+                            (error.InnerException is System.Net.Sockets.SocketException socket ? $" ({socket.SocketErrorCode})." : ".")
+                    });
+            }
+            catch (OperationCanceledException) { throw new InvalidOperationException("Сервер плейлиста не ответил вовремя. Попробуйте ещё раз."); }
+            catch (InvalidDataException error) { throw new InvalidOperationException(error.Message); }
+            catch { throw new InvalidOperationException("Не удалось прочитать плейлист. Проверьте файл или ссылку."); }
+            if (prepared.Count == 0 || closed) return false;
+        }
+        var wasActive = previous?.Id == settings.ActivePlaylistId;
+        if (previous is not null) settings.Playlists.Remove(previous);
+        if (replacement is not null) settings.Playlists.Add(replacement);
+        if (replacement is not null || wasActive)
+        {
+            var selected = replacement ?? settings.Playlists.FirstOrDefault();
+            settings.ActivePlaylistId = selected?.Id;
+            settings.PlaylistPath = selected?.Source;
+            ClearPlaylistChannels();
+            RefreshPlaylistSelector();
+            if (selected is not null) await LoadPlaylist(selected.Source, prepared);
+            ChannelsColumn.Width = new GridLength(250);
+        }
+        else RefreshPlaylistSelector();
+        SaveSettings();
+        return true;
     }
 
     private async void OpenEpg_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog { Filter = "XMLTV|*.xml;*.gz", InitialDirectory = AppPaths.ResourcesDirectory };
         if (dialog.ShowDialog(this) != true) return;
+        await OpenEpgSource(dialog.FileName);
+    }
+
+    private async void OpenEpgUrl_Click(object sender, RoutedEventArgs e)
+    {
+        if (RemoteSource.Prompt(this, "EPG") is { } url) await OpenEpgSource(url);
+    }
+
+    private async Task OpenEpgSource(string source)
+    {
+        if (restoring) epgChosenDuringRestore = true;
+        epgUpdateCancellation?.Cancel();
         OpenEpg.IsEnabled = RefreshEpg.IsEnabled = false;
         Status.Text = "Чтение программы передач…";
         try
         {
-            if (!await LoadEpg(dialog.FileName)) { Status.Text = "Не удалось прочитать EPG. Проверьте файл и права доступа."; return; }
+            if (!await LoadEpg(source)) { Status.Text = "Не удалось загрузить EPG. Проверьте файл или ссылку на XMLTV (XML или GZ)."; return; }
             Status.Text = $"EPG загружен. Сопоставлено каналов: {channels.Count(c => epg?.Match(c) is not null)} из {channels.Count}.";
             SaveSettings();
         }
@@ -279,16 +388,25 @@ public partial class MainWindow : Window
 
     private async Task UpdateEpg(bool staleOnly)
     {
-        if (closed || updatingEpg) return;
+        if (closed) return;
+        if (updatingEpg)
+        {
+            Status.Text = "Обновление EPG уже выполняется.";
+            return;
+        }
         updatingEpg = true;
-        OpenPlaylist.IsEnabled = OpenEpg.IsEnabled = RefreshEpg.IsEnabled = false;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        epgUpdateCancellation = cancellation;
         var messages = new List<string>();
         IProgress<string> progress = new Progress<string>(message => { if (!closed) Status.Text = message; });
         try
         {
             foreach (var source in new[] { "main", "israel", "regional", "bcu", "iptvx", "tvteam" })
             {
-                if (closed) return;
+                if (closed || cancellation.IsCancellationRequested) return;
+                var mainUrl = RemoteSource.IsUrl(settings.EpgPath ?? "") ? settings.EpgPath! : "http://epg.one/epg2.xml.gz";
+                var mainPath = RemoteSource.IsUrl(settings.EpgPath ?? "")
+                    ? RemoteSource.CachePath(mainUrl, ".xml.gz") : EpgUpdater.TargetPath;
                 var (path, url, name, cachedPath, loaded) = source switch
                 {
                     "israel" => (EpgUpdater.IsraelPath, EpgUpdater.IsraelUrl, "Израиль",
@@ -301,36 +419,37 @@ public partial class MainWindow : Window
                         File.Exists(EpgUpdater.IptvxPath) ? EpgUpdater.IptvxPath : Path.Combine(AppPaths.ResourcesDirectory, "epg (2).xml.gz"), iptvxEpg is not null),
                     "tvteam" => (EpgUpdater.TvteamPath, EpgUpdater.TvteamUrl, "TVTeam",
                         File.Exists(EpgUpdater.TvteamPath) ? EpgUpdater.TvteamPath : Path.Combine(AppPaths.ResourcesDirectory, "7.2.xml"), tvteamEpg is not null),
-                    _ => (EpgUpdater.TargetPath, "http://epg.one/epg2.xml.gz", "Основной EPG", settings.EpgPath ?? EpgUpdater.TargetPath, primaryEpgLoaded)
+                    _ => (mainPath, mainUrl, "Основной EPG", RemoteSource.IsUrl(settings.EpgPath ?? "") ? mainPath : settings.EpgPath ?? mainPath, primaryEpgLoaded)
                 };
                 if (staleOnly && loaded && !EpgUpdater.NeedsUpdate(cachedPath, DateTimeOffset.UtcNow)) continue;
                 try
                 {
                     progress.Report($"Обновление: {name}…");
-                    var result = await EpgUpdater.UpdateAsync(path, progress, lifetime.Token, url);
-                    if (closed) return;
+                    var result = await EpgUpdater.UpdateAsync(path, progress, cancellation.Token, url);
+                    if (closed || cancellation.IsCancellationRequested) return;
                     if (source == "iptvx") iptvxEpg = result.Guide;
                     else if (source == "tvteam") tvteamEpg = result.Guide;
                     else if (source == "bcu") bcuEpg = result.Guide;
                     else if (source == "regional") regionalEpg = result.Guide;
                     else if (source == "israel") israelEpg = result.Guide;
-                    else { epg = result.Guide; primaryEpgLoaded = true; settings.EpgPath = path; }
+                    else { epg = result.Guide; primaryEpgLoaded = true; if (!RemoteSource.IsUrl(settings.EpgPath ?? "")) settings.EpgPath = path; }
                     AttachSupplementalEpg();
                     UpdateGuide();
                     messages.Add($"{name}: обновлено ({result.Count:N0} передач).");
                     SaveSettings();
                 }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { return; }
                 catch { messages.Add($"{name}: обновить не удалось; используется сохранённая программа, если она доступна."); }
             }
         }
         finally
         {
             updatingEpg = false;
+            epgUpdateCancellation = null;
             if (!closed)
             {
                 OpenPlaylist.IsEnabled = OpenEpg.IsEnabled = RefreshEpg.IsEnabled = true;
-                if (messages.Count > 0) Status.Text = string.Join(" ", messages);
+                if (!cancellation.IsCancellationRequested && messages.Count > 0) Status.Text = string.Join(" ", messages);
             }
         }
     }
@@ -422,6 +541,89 @@ public partial class MainWindow : Window
     }
 
     private void SetPlaybackState(string text) => Dispatcher.BeginInvoke(() => { if (!closed) PlaybackState.Text = text; });
+    private async void CheckAppUpdates_Click(object sender, RoutedEventArgs e) => await CheckAppUpdates(true);
+
+    private async Task CheckAppUpdates(bool manual)
+    {
+        if (closed || checkingAppUpdate || installingAppUpdate) return;
+        checkingAppUpdate = true;
+        lastAppUpdateCheck = DateTimeOffset.UtcNow;
+        CheckAppUpdatesMenu.IsEnabled = false;
+        CheckAppUpdatesMenu.Header = "Проверка обновлений…";
+        try
+        {
+            var current = typeof(MainWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
+            var release = await appUpdater.CheckAsync(current, lifetime.Token);
+            if (closed) return;
+            availableAppRelease = release;
+            AppUpdateLink.Visibility = release is null ? Visibility.Collapsed : Visibility.Visible;
+            if (release is not null) AppUpdateLabel.Text = $"Обновить до {release.Version.ToString(3)}";
+            if (manual) Status.Text = release is null ? $"Установлена актуальная версия {current.ToString(3)}."
+                : $"Доступна версия {release.Version.ToString(3)}. Нажмите ссылку рядом с «Каналы» для установки.";
+            CheckAppUpdatesMenu.Header = "Проверить обновления плеера";
+            CheckAppUpdatesMenu.ToolTip = release is null ? $"Текущая версия: {current.ToString(3)}" : $"Доступна версия {release.Version.ToString(3)}";
+        }
+        catch (OperationCanceledException) when (closed) { }
+        catch (InvalidDataException error)
+        {
+            if (!closed)
+            {
+                CheckAppUpdatesMenu.Header = "Источник обновлений недоступен — повторить";
+                if (manual) Status.Text = error.Message;
+            }
+        }
+        catch
+        {
+            if (!closed)
+            {
+                CheckAppUpdatesMenu.Header = "Повторить проверку обновлений";
+                if (manual) Status.Text = "Не удалось проверить обновления плеера. Проверьте подключение к интернету и доступность релизов GitHub.";
+            }
+        }
+        finally
+        {
+            checkingAppUpdate = false;
+            if (!closed) CheckAppUpdatesMenu.IsEnabled = true;
+        }
+    }
+
+    private async void InstallAppUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (availableAppRelease is not { } release || installingAppUpdate || closed) return;
+        installingAppUpdate = true;
+        AppUpdateLink.IsEnabled = false;
+        try
+        {
+            Status.Text = $"Скачивание версии {release.Version.ToString(3)}…";
+            var directory = Path.Combine(AppPaths.DataDirectory, "updates", release.Version.ToString(3));
+            var installer = await appUpdater.DownloadAsync(release, directory, lifetime.Token);
+            if (closed) return;
+            // Keep a settings snapshot as well as the unchanged user data directory.
+            settings.Save(SettingsPath);
+            File.Copy(SettingsPath, Path.Combine(directory, "player-settings.backup.json"), overwrite: true);
+            var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(installer)
+            {
+                UseShellExecute = true,
+                Arguments = $"/DIR=\"{AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar)}\" /CLOSEAPPLICATIONS"
+            });
+            if (process is null) throw new InvalidOperationException();
+            Application.Current.Shutdown();
+        }
+        catch (OperationCanceledException) when (closed) { }
+        catch (InvalidDataException error) { if (!closed) Status.Text = error.Message; }
+        catch { if (!closed) Status.Text = "Не удалось установить обновление. Текущая версия и данные сохранены; попробуйте ещё раз."; }
+        finally
+        {
+            installingAppUpdate = false;
+            if (!closed) AppUpdateLink.IsEnabled = true;
+        }
+    }
+
+    private void SourceMenu_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (sender is MenuItem { HasItems: true, IsEnabled: true } item) item.IsSubmenuOpen = true;
+    }
+
     private void Sources_Click(object sender, RoutedEventArgs e)
     {
         SourcesButton.ContextMenu.PlacementTarget = SourcesButton;

@@ -10,6 +10,8 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        Task.Run(SourceChecks.Run).GetAwaiter().GetResult();
+        Task.Run(AppUpdateChecks.Run).GetAwaiter().GetResult();
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var window = new MainWindow();
         object Named(string name) => window.FindName(name) ?? throw new Exception("Missing control: " + name);
@@ -27,12 +29,23 @@ internal static class Program
         {
             var sources = (Button)Named("SourcesButton");
             Call("Sources_Click", sources, new RoutedEventArgs());
-            Check(sources.ContextMenu.IsOpen && sources.ContextMenu.Items.Count == 3, "Sources button opens all playlist and EPG actions");
+            Check(sources.ContextMenu.IsOpen && sources.ContextMenu.Items.Count == 4, "Sources button opens playlist, EPG and app update actions");
+            Check(((Button)Named("AppUpdateLink")).Visibility == Visibility.Collapsed && Named("CheckAppUpdatesMenu") is MenuItem,
+                "Update link is hidden until a new release is found");
             Check(ReferenceEquals(Named("OpenPlaylist"), sources.ContextMenu.Items[0]) &&
                 ReferenceEquals(Named("OpenEpg"), sources.ContextMenu.Items[1]) &&
                 ReferenceEquals(Named("RefreshEpg"), sources.ContextMenu.Items[2]), "Existing actions are accessible in the menu");
             sources.ContextMenu.IsOpen = false;
+            Check(((MenuItem)Named("OpenPlaylist")).Header.ToString() == "Плейлисты" && ((MenuItem)Named("OpenEpg")).Items.Count == 2,
+                "Playlist management replaces the old M3U submenu");
+            typeof(MainWindow).GetField("updatingEpg", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, true);
+            Call("RefreshEpg_Click", null, new RoutedEventArgs());
+            Check(((MenuItem)Named("OpenPlaylist")).IsEnabled && ((MenuItem)Named("OpenEpg")).IsEnabled &&
+                ((MenuItem)Named("RefreshEpg")).IsEnabled, "An ongoing update leaves source actions accessible");
+            Check(((TextBlock)Named("Status")).Text == "Обновление EPG уже выполняется.", "Repeated refresh explains the ongoing update");
+            typeof(MainWindow).GetField("updatingEpg", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
             var settings = Field<PlayerSettings>("settings");
+            PlaylistChecks.Run(window);
             settings.ChannelName = "Last played";
             settings.ChannelGroup = "Saved group";
             var list = (ListBox)Named("Channels");
