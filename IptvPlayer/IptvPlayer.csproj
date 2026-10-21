@@ -17,6 +17,7 @@
     <ApplicationIcon>Assets/catlu.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <None Include="../LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Resource Include="Assets/catlu.ico"/>
     <Resource Include="Assets/catlu.png"/>
     <PackageReference Include="LibVLCSharp.WPF" Version="3.10.1" />
