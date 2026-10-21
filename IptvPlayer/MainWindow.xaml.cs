@@ -41,6 +41,10 @@ public partial class MainWindow : Window
     private bool updatingEpg;
     private CancellationTokenSource? epgUpdateCancellation;
     private Channel? playingChannel;
+    private bool archiveMode;
+    private Programme? archiveProgramme;
+    private Channel? archiveGuideChannel;
+    private sealed record ArchiveDay(DateTime Date, string Label);
     private bool fullscreen;
     private WindowState previousWindowState;
     private GridLength previousChannelsWidth;
@@ -509,6 +513,8 @@ public partial class MainWindow : Window
         UpdateNow();
         if (Channels.SelectedItem is not Channel channel)
         {
+            ArchiveToggle.IsEnabled = false;
+            ArchiveHint.Text = "";
             Guide.ItemsSource = null;
             GuideTitle.Text = "Выберите канал";
             GuideEmpty.Text = "Откройте список кнопкой «Каналы».";
@@ -516,6 +522,27 @@ public partial class MainWindow : Window
             return;
         }
         GuideTitle.Text = channel.Name;
+        ArchiveToggle.IsEnabled = channel.HasArchive;
+        ArchiveHint.Text = channel.HasArchive ? $"Архив до {channel.ArchiveDays} дн." : "У канала нет архива.";
+        if (archiveGuideChannel != channel)
+        {
+            archiveGuideChannel = channel;
+            var today = DateTime.Today;
+            ArchiveDate.ItemsSource = Enumerable.Range(0, channel.ArchiveDays + 1)
+                .Select(day => new ArchiveDay(today.AddDays(-day), today.AddDays(-day).ToString("dd.MM.yyyy"))).ToArray();
+            ArchiveDate.SelectedIndex = 0;
+        }
+        if (archiveMode)
+        {
+            var archiveId = epg?.Match(channel);
+            var entries = archiveId is null || ArchiveDate.SelectedItem is not ArchiveDay day ? []
+                : epg!.Archive(archiveId, channel, day.Date, DateTimeOffset.UtcNow).ToList();
+            Guide.ItemsSource = entries;
+            GuideEmpty.Text = !channel.HasArchive ? "У канала нет архива." : entries.Count == 0
+                ? "В EPG нет доступных передач за этот день. Попробуйте другой день или обновите EPG." : "";
+            GuideEmpty.Visibility = GuideEmpty.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+            return;
+        }
         var id = epg?.Match(channel);
         var programmes = id is null ? [] : epg!.Upcoming(id).ToList();
         Guide.ItemsSource = programmes;
@@ -529,6 +556,16 @@ public partial class MainWindow : Window
     {
         var channel = playingChannel ?? Channels.SelectedItem as Channel;
         CurrentChannel.Text = channel?.Name ?? "Выберите канал";
+        LiveButton.Visibility = archiveProgramme is null ? Visibility.Collapsed : Visibility.Visible;
+        if (archiveProgramme is { } recording)
+        {
+            NowTitle.Text = recording.Title;
+            NextTitle.Text = $"Архив · {recording.Start.ToLocalTime():dd.MM.yyyy HH:mm}";
+            ProgrammeStart.Text = recording.Start.ToLocalTime().ToString("HH:mm");
+            ProgrammeEnd.Text = recording.Stop.ToLocalTime().ToString("HH:mm");
+            ProgrammeProgress.Value = player is null ? 0 : Math.Clamp(player.Time / (recording.Stop - recording.Start).TotalMilliseconds * 100, 0, 100);
+            return;
+        }
         var id = channel is null ? null : epg?.Match(channel);
         var programmes = id is null ? [] : epg!.Upcoming(id).ToList();
         var current = programmes.FirstOrDefault(p => p.IsCurrent);
@@ -540,7 +577,7 @@ public partial class MainWindow : Window
         ProgrammeProgress.Value = current?.Progress ?? 0;
     }
 
-    private void SetPlaybackState(string text) => Dispatcher.BeginInvoke(() => { if (!closed) PlaybackState.Text = text; });
+    private void SetPlaybackState(string text) => Dispatcher.BeginInvoke(() => { if (!closed) PlaybackState.Text = archiveProgramme is not null && player?.IsPlaying == true ? "Архив" : text; });
     private async void CheckAppUpdates_Click(object sender, RoutedEventArgs e) => await CheckAppUpdates(true);
 
     private async Task CheckAppUpdates(bool manual)
@@ -738,14 +775,16 @@ public partial class MainWindow : Window
         var channel = fullscreen ? playingChannel ?? selected : selected;
         if (channel is not null) PlayChannel(channel);
     }
-    private void PlayChannel(Channel channel)
+    private void PlayChannel(Channel channel, Programme? recording = null)
     {
         if (player is null || vlc is null) return;
         try
         {
-            using var media = new Media(vlc, channel.Stream);
+            using var media = new Media(vlc, recording is null ? channel.Stream : channel.ArchiveStream(recording, DateTimeOffset.UtcNow));
+            if (recording is not null) media.AddOption($":run-time={(int)(recording.Stop - recording.Start).TotalSeconds}");
             if (player.Play(media))
             {
+                archiveProgramme = recording;
                 playingChannel = channel;
                 settings.ChannelName = channel.Name;
                 settings.ChannelGroup = channel.Group;
@@ -758,6 +797,31 @@ public partial class MainWindow : Window
         }
         catch { Status.Text = "Не удалось открыть канал."; }
     }
+    private void ArchiveToggle_Click(object sender, RoutedEventArgs e)
+    {
+        archiveMode = !archiveMode;
+        ArchiveToggle.Content = archiveMode ? "Программа" : "Архив";
+        ArchiveDate.Visibility = ReplayButton.Visibility = archiveMode ? Visibility.Visible : Visibility.Collapsed;
+        UpdateGuide();
+    }
+    private void ArchiveDate_Changed(object sender, SelectionChangedEventArgs e) { if (archiveMode) UpdateGuide(); }
+    private void Replay_Click(object sender, RoutedEventArgs e)
+    {
+        if (Channels.SelectedItem is not Channel channel || Guide.SelectedItem is not Programme programme)
+        { Status.Text = "Выберите передачу в архиве."; return; }
+        if (!channel.CanReplay(programme, DateTimeOffset.UtcNow))
+        { Status.Text = "Передача недоступна в архиве."; return; }
+        PlayChannel(channel, programme);
+    }
+    private void Archive_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (archiveMode && ItemsControl.ContainerFromElement(Guide, e.OriginalSource as DependencyObject) is ListBoxItem)
+            Replay_Click(sender, e);
+    }
+    private void Archive_KeyDown(object sender, KeyEventArgs e)
+    { if (archiveMode && e.Key == Key.Enter) { Replay_Click(sender, e); e.Handled = true; } }
+    private void Live_Click(object sender, RoutedEventArgs e)
+    { if (playingChannel is { } channel) PlayChannel(channel); }
     private void Pause_Click(object sender, RoutedEventArgs e) => player?.Pause();
     private void Stop_Click(object sender, RoutedEventArgs e) { player?.Stop(); Status.Text = "Воспроизведение остановлено."; }
     private void Volume_Changed(object sender, RoutedPropertyChangedEventArgs<double> e) { if (player is not null) player.Volume = (int)e.NewValue; }

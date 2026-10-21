@@ -70,7 +70,7 @@ public static class EpgUpdater
         DateTimeOffset now, CancellationToken cancellation = default)
     {
         var temporary = targetPath + "." + Guid.NewGuid().ToString("N") + ".tmp.gz";
-        var firstDay = now.UtcDateTime.Date.AddDays(-3);
+        var firstDay = now.UtcDateTime.Date.AddDays(-7);
         var lastDay = now.UtcDateTime.Date.AddDays(3);
         var ids = new HashSet<string>(StringComparer.Ordinal);
         var upcomingIds = new HashSet<string>(StringComparer.Ordinal);

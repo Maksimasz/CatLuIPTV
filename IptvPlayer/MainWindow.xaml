@@ -220,8 +220,17 @@
       <TextBlock x:Name="GuideTitle" Text="Выберите канал" FontSize="16" FontWeight="SemiBold" Margin="0,5,0,0" TextWrapping="Wrap"/>
       <TextBlock Text="Время вашего компьютера" FontSize="11" Foreground="#8D96A3" Margin="0,5,0,0"/>
      </StackPanel>
+     <StackPanel DockPanel.Dock="Top" Margin="16,0,16,10">
+      <StackPanel Orientation="Horizontal">
+       <Button x:Name="ArchiveToggle" Content="Архив" Click="ArchiveToggle_Click" Padding="12,7" ToolTip="Прошедшие передачи выбранного канала"/>
+       <Button x:Name="LiveButton" Content="В эфир" Click="Live_Click" Padding="12,7" Margin="8,0,0,0" Visibility="Collapsed"/>
+      </StackPanel>
+      <ComboBox x:Name="ArchiveDate" Visibility="Collapsed" SelectionChanged="ArchiveDate_Changed" DisplayMemberPath="Label" Foreground="#ECEEF2" Margin="0,8,0,0" AutomationProperties.Name="День архива"/>
+      <Button x:Name="ReplayButton" Content="Смотреть передачу" Click="Replay_Click" Visibility="Collapsed" Padding="12,7" Margin="0,8,0,0"/>
+      <TextBlock x:Name="ArchiveHint" Foreground="#A3AAB5" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+     </StackPanel>
      <TextBlock x:Name="GuideEmpty" DockPanel.Dock="Top" Margin="16,8" Foreground="#A3AAB5" TextWrapping="Wrap"/>
-     <ListBox x:Name="Guide" AutomationProperties.Name="Программа передач">
+     <ListBox MouseDoubleClick="Archive_DoubleClick" PreviewKeyDown="Archive_KeyDown" x:Name="Guide" AutomationProperties.Name="Программа передач">
       <ListBox.ItemTemplate><DataTemplate>
        <StackPanel>
         <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,5"/>

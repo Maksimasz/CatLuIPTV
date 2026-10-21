@@ -276,6 +276,10 @@ public sealed class Epg
             upcoming.All(p => !System.Text.RegularExpressions.Regex.IsMatch(p.Title, @"[֐-׿ієїґІЄЇҐ]"));
     }
 
+    public IEnumerable<Programme> Archive(string id, Channel channel, DateTime date, DateTimeOffset now) =>
+        programmes.TryGetValue(id, out var list)
+            ? list.Where(p => p.Start.ToLocalTime().Date == date.Date && channel.CanReplay(p, now)) : [];
+
     public IEnumerable<Programme> Upcoming(string id) => programmes.TryGetValue(id, out var list)
         ? list.Where(p => p.Stop > DateTimeOffset.UtcNow).Take(30) : [];
 

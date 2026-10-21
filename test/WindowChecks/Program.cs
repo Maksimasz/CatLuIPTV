@@ -51,6 +51,14 @@ internal static class Program
             var list = (ListBox)Named("Channels");
             list.ItemsSource = new[] { new Channel { Name = "Only highlighted", Group = "Other group", Stream = new Uri("https://example.invalid/test") } };
             list.SelectedIndex = 0;
+            Check(!((Button)Named("ArchiveToggle")).IsEnabled, "Archive disabled for live-only channel");
+            list.ItemsSource = new[] { new Channel { Name = "Archive channel", ArchiveDays = 7, Stream = new Uri("https://example.invalid/test") } };
+            list.SelectedIndex = 0;
+            Check(((Button)Named("ArchiveToggle")).IsEnabled, "Archive enabled for supported channel");
+            Call("ArchiveToggle_Click", null, new RoutedEventArgs());
+            Check(((ComboBox)Named("ArchiveDate")).Visibility == Visibility.Visible && ((ComboBox)Named("ArchiveDate")).Items.Count == 8, "Archive days fit existing guide");
+            Call("ArchiveToggle_Click", null, new RoutedEventArgs());
+            Check(((ComboBox)Named("ArchiveDate")).Visibility == Visibility.Collapsed, "Programme view restored");
             Check(settings.ChannelName == "Last played" && settings.ChannelGroup == "Saved group", "Highlighting a channel preserves the last played channel");
             Check(guide.Width.Value == 350, "Guide starts open");
             Call("ToggleGuide_Click", null, new RoutedEventArgs());
